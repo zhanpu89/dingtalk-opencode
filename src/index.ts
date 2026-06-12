@@ -73,14 +73,38 @@ async function handleRobotMessage(raw: string): Promise<void> {
       });
 
       const response = await opencode.sendMessage(sessionId, message);
-      const reply = opencode.extractResponseText(response);
+      const { summary, changedFiles, fullLength } = opencode.extractSummary(response);
 
-      log.info("sending reply back to DingTalk", {
-        replyLen: reply.length,
+      const shareUrl = await opencode.shareSession(sessionId);
+
+      let dingtalkReply: string;
+      if (changedFiles.length > 0) {
+        const fileList = changedFiles.map((f) => `  - \`${f}\``).join("\n");
+        dingtalkReply = [
+          `**✅ 任务完成**`,
+          ``,
+          `📝 ${summary}`,
+          ``,
+          `📁 修改文件：`,
+          fileList,
+        ].join("\n");
+      } else {
+        dingtalkReply = `**✅ 完成**\n\n${summary}`;
+      }
+
+      if (shareUrl) {
+        dingtalkReply += `\n\n🔗 [查看完整对话](${shareUrl})`;
+      } else {
+        dingtalkReply += `\n\n💬 完整对话已保存 \`${sessionId.slice(0, 8)}\``;
+      }
+
+      log.info("sending summary reply to DingTalk", {
+        summaryLen: summary.length,
+        fileCount: changedFiles.length,
         sessionId: sessionId.slice(0, 8),
       });
 
-      await dingtalk.sendMessage(msg.sessionWebhook, reply);
+      await dingtalk.sendMessage(msg.sessionWebhook, dingtalkReply);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       log.error("processing failed", { error: errorMsg });

@@ -3,6 +3,7 @@ import type {
   OpenCodeMessageResponse,
   OpenCodeSession,
   OpenCodeSessionListResponse,
+  SummaryResult,
 } from "./types.js";
 import { Logger } from "./logger.js";
 
@@ -95,35 +96,62 @@ export class OpenCodeClient {
     );
   }
 
-  extractResponseText(response: OpenCodeMessageResponse): string {
+  async shareSession(sessionId: string): Promise<string | null> {
+    try {
+      const result = await this.request<{ id: string; shareURL?: string }>(
+        "POST",
+        `/session/${sessionId}/share`
+      );
+      return result.shareURL || null;
+    } catch (err) {
+      log.warn("failed to share session", { sessionId: sessionId.slice(0, 8), error: String(err) });
+      return null;
+    }
+  }
+
+  extractSummary(response: OpenCodeMessageResponse): SummaryResult {
     const textParts = response.parts
       .filter((p) => p.type === "text" && p.text)
       .map((p) => p.text!.trim())
       .filter(Boolean);
 
-    if (textParts.length === 0) {
-      const toolParts = response.parts.filter((p) => p.type === "tool_use");
-      if (toolParts.length > 0) {
-        let summary = "使用了以下工具：\n";
-        for (const tp of toolParts) {
-          summary += `- ${tp.name || "unknown"}\n`;
-        }
-        return summary;
+    let summary = "(无文本回复)";
+    if (textParts.length > 0) {
+      const paragraphs = textParts[0].split(/\n\n+/).filter(Boolean);
+      summary = paragraphs[0] || textParts[0];
+      if (summary.length > 200) {
+        summary = summary.slice(0, 200) + "...";
       }
-      return "(无文本回复)";
     }
 
-    return textParts.join("\n\n");
+    const changedFiles: string[] = [];
+    for (const part of response.parts) {
+      if (
+        part.type === "tool_use" &&
+        part.name &&
+        typeof part.name === "string"
+      ) {
+        const filePath =
+          (part as Record<string, unknown>).filePath ||
+          (part as Record<string, unknown>).path;
+        if (filePath && typeof filePath === "string") {
+          changedFiles.push(filePath);
+        }
+      }
+    }
+
+    return {
+      summary,
+      changedFiles: [...new Set(changedFiles)],
+      fullLength: textParts.reduce((sum, t) => sum + t.length, 0),
+    };
   }
 
   async health(): Promise<boolean> {
     try {
-      await this.request<{ healthy: boolean }>(
-        "GET",
-        "/global/health"
-      );
+      await this.request<{ healthy: boolean }>("GET", "/global/health");
       return true;
-    } catch (err) {
+    } catch {
       return false;
     }
   }

@@ -50,3 +50,9 @@ export interface OpenCodeSessionListResponse {
   title?: string;
   [key: string]: unknown;
 }
+
+export interface SummaryResult {
+  summary: string;
+  changedFiles: string[];
+  fullLength: number;
+}
