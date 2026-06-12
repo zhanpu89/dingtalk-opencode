@@ -1,0 +1,26 @@
+{
+  "name": "dingtalk-opencode",
+  "version": "1.0.0",
+  "description": "DingTalk bot middleware for opencode AI coding agent (Stream mode)",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:serve": "opencode serve --port 4096",
+    "start:all": "concurrently \"npm run start:serve\" \"npm run dev\"",
+    "start:docker": "concurrently \"opencode serve --port 4096 --hostname 0.0.0.0\" \"node dist/index.js\"",
+    "docker:build": "docker build -t dingtalk-opencode .",
+    "docker:run": "docker compose up -d"
+  },
+  "dependencies": {
+    "dingtalk-stream": "^2.1.6-beta.1",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
