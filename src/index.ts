@@ -54,6 +54,11 @@ async function handleRobotMessage(raw: string): Promise<void> {
     return;
   }
 
+  await dingtalk.sendTextMessage(
+    msg.sessionWebhook,
+    `已收到消息，正在用 OpenCode 处理中，请稍候...`
+  );
+
   const sessionKey = getSessionKey(msg);
 
   queue.enqueue(sessionKey, async () => {

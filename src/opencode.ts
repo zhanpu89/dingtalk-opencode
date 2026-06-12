@@ -4,6 +4,7 @@ import type {
   OpenCodeSession,
   OpenCodeSessionListResponse,
   SummaryResult,
+  OpenCodePart,
 } from "./types.js";
 import { Logger } from "./logger.js";
 
@@ -83,17 +84,122 @@ export class OpenCodeClient {
     sessionId: string,
     text: string
   ): Promise<OpenCodeMessageResponse> {
-    log.debug("sending message", {
+    log.debug("sending message (streaming)", {
       sessionId: sessionId.slice(0, 8),
       text: text.slice(0, 60),
     });
-    return this.request<OpenCodeMessageResponse>(
-      "POST",
-      `/session/${sessionId}/message`,
-      {
-        parts: [{ type: "text", text }],
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    };
+    if (this.authHeader) {
+      headers["Authorization"] = this.authHeader;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ parts: [{ type: "text", text }] }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(
+        `opencode API error ${res.status} on POST /session/${sessionId}/message: ${body}`,
+      );
+    }
+
+    const result: OpenCodeMessageResponse = {
+      info: { id: "", sessionID: sessionId, role: "assistant" },
+      parts: [],
+    };
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let currentEvent = "";
+    let currentPart: OpenCodePart | null = null;
+
+    function flushLine(line: string) {
+      if (line.startsWith("event: ")) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith("data: ")) {
+        let data: Record<string, unknown>;
+        try {
+          data = JSON.parse(line.slice(6));
+        } catch {
+          return;
+        }
+
+        switch (currentEvent) {
+          case "message_start": {
+            const msg = data.message as Record<string, unknown> | undefined;
+            if (msg) {
+              result.info = {
+                id: (msg.id as string) ?? "",
+                sessionID: (msg.sessionID as string) ?? sessionId,
+                role: "role" in msg ? (msg.role as string) : "assistant",
+              };
+            }
+            break;
+          }
+          case "content_block_start": {
+            const block = data.content_block as Record<string, unknown> | undefined;
+            if (!block) break;
+            const type = block.type as string;
+            currentPart = { type, ...block } as OpenCodePart;
+            if (type === "text") {
+              currentPart.text = (currentPart.text as string) ?? "";
+            }
+            result.parts.push(currentPart);
+            break;
+          }
+          case "content_block_delta": {
+            const delta = data.delta as Record<string, unknown> | undefined;
+            if (!delta || delta.type !== "text") break;
+            if (currentPart?.type === "text") {
+              currentPart.text = (currentPart.text ?? "") + (delta.text as string);
+            }
+            break;
+          }
+          case "content_block_stop":
+            currentPart = null;
+            break;
+          case "error": {
+            const errData = data.error as Record<string, unknown> | undefined;
+            throw new Error(
+              `opencode stream error: ${errData?.message ?? JSON.stringify(data)}`,
+            );
+          }
+        }
       }
-    );
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        flushLine(line);
+      }
+    }
+    if (buf.trim()) {
+      flushLine(buf);
+    }
+
+    return result;
   }
 
   async shareSession(sessionId: string): Promise<string | null> {
