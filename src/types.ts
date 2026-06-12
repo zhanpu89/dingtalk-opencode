@@ -54,5 +54,6 @@ export interface OpenCodeSessionListResponse {
 export interface SummaryResult {
   summary: string;
   changedFiles: string[];
+  toolNames: string[];
   fullLength: number;
 }

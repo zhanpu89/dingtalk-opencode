@@ -33,7 +33,7 @@ export function loadConfig(): AppConfig {
     dingtalkAppSecret: envStr("DINGTALK_APP_SECRET"),
     dingtalkBotName: envStr("DINGTALK_BOT_NAME", "OpenCode"),
     port: envInt("PORT", 3000),
-    requestTimeoutMs: envInt("REQUEST_TIMEOUT_MS", 120_000),
+    requestTimeoutMs: envInt("REQUEST_TIMEOUT_MS", 600_000),
     rateLimitMax: envInt("RATE_LIMIT_MAX", 20),
     rateLimitWindowMs: envInt("RATE_LIMIT_WINDOW_MS", 60_000),
     logLevel: envStr("LOG_LEVEL", "INFO"),

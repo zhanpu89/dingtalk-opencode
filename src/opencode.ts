@@ -171,6 +171,67 @@ export class OpenCodeClient {
     }
   }
 
+  /** Convert wide tables (>=4 columns) to compact key-value list for narrow DingTalk card */
+  private reformatWideTables(text: string): string {
+    const lines = text.split("\n");
+    const result: string[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+      const trimmed = lines[i].trim();
+      if (
+        trimmed.startsWith("|") &&
+        i + 1 < lines.length &&
+        /^\|[\s\|:-]+\|$/.test(lines[i + 1].trim())
+      ) {
+        const tableLines: string[] = [];
+        while (i < lines.length && lines[i].trim().startsWith("|")) {
+          tableLines.push(lines[i]);
+          i++;
+        }
+        result.push(this.compactTable(tableLines));
+      } else {
+        result.push(lines[i]);
+        i++;
+      }
+    }
+    return result.join("\n");
+  }
+
+  /** Compact a markdown table into key-value format if it has >=4 columns */
+  private compactTable(tableLines: string[]): string {
+    if (tableLines.length < 3) return tableLines.join("\n");
+
+    const headers = tableLines[0]
+      .split("|")
+      .map((c) => c.trim())
+      .filter(Boolean);
+    if (headers.length < 4) return tableLines.join("\n");
+
+    const dataRows = tableLines.slice(2);
+    const entries: string[] = [];
+
+    for (const row of dataRows) {
+      const cells = row
+        .split("|")
+        .map((c) => c.trim())
+        .filter(Boolean);
+      const pairs: [string, string][] = [];
+      for (let j = 0; j < Math.min(headers.length, cells.length); j++) {
+        pairs.push([headers[j], cells[j]]);
+      }
+      const pairLines: string[] = [];
+      for (let k = 0; k < pairs.length; k += 3) {
+        const group = pairs.slice(k, k + 3);
+        pairLines.push(group.map(([h, v]) => `**${h}**: ${v}`).join("  "));
+      }
+      entries.push(pairLines.join("\n"));
+      entries.push("");
+    }
+
+    return entries.join("\n").trim();
+  }
+
   extractSummary(response: OpenCodeMessageResponse): SummaryResult {
     const textParts = response.parts
       .filter((p) => p.type === "text" && p.text)
@@ -180,19 +241,40 @@ export class OpenCodeClient {
     let summary = "(无文本回复)";
     if (textParts.length > 0) {
       const paragraphs = textParts[0].split(/\n\n+/).filter(Boolean);
-      summary = paragraphs[0] || textParts[0];
-      if (summary.length > 200) {
-        summary = summary.slice(0, 200) + "...";
+      // 取前 3 段，每段最多 500 字，总计上限 1000 字
+      // 保留段落内换行（Markdown 表格/列表/代码块需要换行才能正确渲染）
+      const kept: string[] = [];
+      let totalLen = 0;
+      for (const p of paragraphs) {
+        const trimmed = p.trim();
+        if (!trimmed) continue;
+        const slice = trimmed.length > 500 ? trimmed.slice(0, 500) + "..." : trimmed;
+        if (totalLen + slice.length > 1000) {
+          kept.push(slice.slice(0, 1000 - totalLen) + "...");
+          totalLen = 1000;
+          break;
+        }
+        kept.push(slice);
+        totalLen += slice.length;
       }
+      summary = kept.join("\n\n");
+      summary = this.reformatWideTables(summary);
     }
 
     const changedFiles: string[] = [];
+    const toolNames = new Set<string>();
     for (const part of response.parts) {
+      if (part.type === "tool_call") {
+        if (part.name && typeof part.name === "string") {
+          toolNames.add(part.name);
+        }
+      }
       if (
         part.type === "tool_use" &&
         part.name &&
         typeof part.name === "string"
       ) {
+        toolNames.add(part.name);
         const filePath =
           (part as Record<string, unknown>).filePath ||
           (part as Record<string, unknown>).path;
@@ -205,6 +287,7 @@ export class OpenCodeClient {
     return {
       summary,
       changedFiles: [...new Set(changedFiles)],
+      toolNames: [...toolNames],
       fullLength: textParts.reduce((sum, t) => sum + t.length, 0),
     };
   }

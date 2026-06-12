@@ -49,21 +49,35 @@ async function handleRobotMessage(raw: string): Promise<void> {
     log.debug("empty message after stripping mention");
     await dingtalk.sendTextMessage(
       msg.sessionWebhook,
-      `你好 ${msg.senderNick}，请直接发送需求，我来帮你用 OpenCode 处理。`
+      `你好 ${msg.senderNick} 👋\n\n我是 OpenCode AI 编程助手，请直接发送需求，我来帮你处理。例如：\n  • "帮我写一个 Python 脚本读取 CSV"\n  • "修复这个项目的登录 Bug"\n  • "给 User 模型添加 email 字段"`
     );
     return;
   }
 
   await dingtalk.sendTextMessage(
     msg.sessionWebhook,
-    `已收到消息，正在用 OpenCode 处理中，请稍候...`
+    `⏳ 已收到消息，正在用 OpenCode AI 处理中...\n\n> ${message.slice(0, 100)}${message.length > 100 ? "..." : ""}\n\n请稍候，处理完成后会通知您。`
   );
 
   const sessionKey = getSessionKey(msg);
 
   queue.enqueue(sessionKey, async () => {
+    let sessionId: string | undefined;
+    let heartbeatCount = 0;
+    const heartbeat = setInterval(async () => {
+      heartbeatCount++;
+      try {
+        await dingtalk.sendTextMessage(
+          msg.sessionWebhook,
+          `⏳ 任务仍在处理中，已等待 ${heartbeatCount * 60} 秒... ${heartbeatCount >= 3 ? "复杂任务可能需要更长时间，请耐心等待" : ""}`
+        );
+      } catch {
+        // webhook may expire after long idle; ignore heartbeat errors
+      }
+    }, 60_000);
+
     try {
-      let sessionId = sessions.get(sessionKey);
+      sessionId = sessions.get(sessionKey);
 
       if (!sessionId) {
         log.info("creating opencode session", { sessionKey });
@@ -78,30 +92,41 @@ async function handleRobotMessage(raw: string): Promise<void> {
       });
 
       const response = await opencode.sendMessage(sessionId, message);
-      const { summary, changedFiles, fullLength } = opencode.extractSummary(response);
+      clearInterval(heartbeat);
+
+      const { summary, changedFiles, toolNames, fullLength } = opencode.extractSummary(response);
 
       const shareUrl = await opencode.shareSession(sessionId);
 
-      let dingtalkReply: string;
+      const parts: string[] = ["**✅ 任务完成**", ""];
+
+      if (summary && summary !== "(无文本回复)") {
+        parts.push(`📝 **处理摘要**：\n${summary}`);
+        parts.push("");
+      }
+
       if (changedFiles.length > 0) {
-        const fileList = changedFiles.map((f) => `  - \`${f}\``).join("\n");
-        dingtalkReply = [
-          `**✅ 任务完成**`,
-          ``,
-          `📝 ${summary}`,
-          ``,
-          `📁 修改文件：`,
-          fileList,
-        ].join("\n");
-      } else {
-        dingtalkReply = `**✅ 完成**\n\n${summary}`;
+        parts.push(`📁 **修改文件**（${changedFiles.length} 个）：`);
+        changedFiles.forEach((f) => parts.push(`  - \`${f}\``));
+        parts.push("");
+      }
+
+      if (toolNames.length > 0) {
+        parts.push(`🔧 **使用操作**：\`${toolNames.join("`, `")}\``);
+        parts.push("");
+      }
+
+      if (fullLength > 0) {
+        parts.push(`📏 回复总长度：${fullLength} 字符`);
       }
 
       if (shareUrl) {
-        dingtalkReply += `\n\n🔗 [查看完整对话](${shareUrl})`;
+        parts.push(`🔗 [查看完整对话](${shareUrl})`);
       } else {
-        dingtalkReply += `\n\n💬 会话ID: \`${sessionId.slice(0, 8)}\``;
+        parts.push(`💬 会话ID: \`${sessionId.slice(0, 8)}\``);
       }
+
+      const dingtalkReply = parts.join("\n");
 
       log.info("sending summary reply to DingTalk", {
         summaryLen: summary.length,
@@ -111,13 +136,22 @@ async function handleRobotMessage(raw: string): Promise<void> {
 
       await dingtalk.sendMessage(msg.sessionWebhook, dingtalkReply);
     } catch (err) {
+      clearInterval(heartbeat);
       const errorMsg = err instanceof Error ? err.message : String(err);
-      log.error("processing failed", { error: errorMsg });
+      const isTimeout = err instanceof Error && err.name === "AbortError";
+      log.error("processing failed", { error: errorMsg, isTimeout });
 
-      await dingtalk.sendTextMessage(
-        msg.sessionWebhook,
-        `处理消息时出错，请稍后重试：${errorMsg}`
-      );
+      if (isTimeout) {
+        await dingtalk.sendTextMessage(
+          msg.sessionWebhook,
+          `⚠️ **任务超时**\n\nOpenCode AI 处理时间超过 ${Math.round(config.requestTimeoutMs / 1000)} 秒，可能因为任务较复杂。\n\n建议：\n  1. 请发送 **更具体的需求**，分步执行\n  2. 可尝试重新发送当前需求\n${sessionId ? `\n💬 会话ID: \`${sessionId.slice(0, 8)}\`` : ""}`
+        );
+      } else {
+        await dingtalk.sendTextMessage(
+          msg.sessionWebhook,
+          `❌ **处理失败**\n\n原因：${errorMsg}\n\n建议：\n  1. 重新发送您的需求重试\n  2. 如果持续失败，请联系管理员\n${sessionId ? `\n💬 会话ID: \`${sessionId.slice(0, 8)}\`` : ""}`
+        );
+      }
     }
   });
 }
