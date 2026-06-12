@@ -4,7 +4,6 @@ import type {
   OpenCodeSession,
   OpenCodeSessionListResponse,
   SummaryResult,
-  OpenCodePart,
 } from "./types.js";
 import { Logger } from "./logger.js";
 
@@ -84,26 +83,21 @@ export class OpenCodeClient {
     sessionId: string,
     text: string
   ): Promise<OpenCodeMessageResponse> {
-    log.debug("sending message (streaming)", {
+    log.debug("sending message", {
       sessionId: sessionId.slice(0, 8),
       text: text.slice(0, 60),
     });
 
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
-      Accept: "text/event-stream",
     };
     if (this.authHeader) {
       headers["Authorization"] = this.authHeader;
     }
 
     const controller = new AbortController();
-    const result: OpenCodeMessageResponse = {
-      info: { id: "", sessionID: sessionId, role: "assistant" },
-      parts: [],
-    };
 
-    // Phase 1: wait for initial HTTP response (connection timeout)
+    // Phase 1: wait for initial HTTP response headers
     const connectTimer = setTimeout(() => controller.abort(), this.timeoutMs);
     let res: Response;
     try {
@@ -124,75 +118,19 @@ export class OpenCodeClient {
       );
     }
 
-    // Phase 2: read SSE stream with per-chunk idle timeout
-    // The AbortController.signal is still associated with the response body,
-    // so aborting it will reject reader.read().
+    // Phase 2: stream the JSON body with per-chunk idle timeout.
+    // The endpoint returns Content-Type: application/json but uses Hono's
+    // stream(), so the body arrives in chunks as the AI generates.
+    // Concatenate all chunks and parse as JSON.
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
-    let buf = "";
-    let currentEvent = "";
-    let currentPart: OpenCodePart | null = null;
+    let raw = "";
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
 
     const resetIdleTimer = () => {
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => controller.abort(), this.timeoutMs);
     };
-
-    function flushLine(line: string) {
-      if (line.startsWith("event: ")) {
-        currentEvent = line.slice(7).trim();
-      } else if (line.startsWith("data: ")) {
-        let data: Record<string, unknown>;
-        try {
-          data = JSON.parse(line.slice(6));
-        } catch {
-          return;
-        }
-
-        switch (currentEvent) {
-          case "message_start": {
-            const msg = data.message as Record<string, unknown> | undefined;
-            if (msg) {
-              result.info = {
-                id: (msg.id as string) ?? "",
-                sessionID: (msg.sessionID as string) ?? sessionId,
-                role: "role" in msg ? (msg.role as string) : "assistant",
-              };
-            }
-            break;
-          }
-          case "content_block_start": {
-            const block = data.content_block as Record<string, unknown> | undefined;
-            if (!block) break;
-            const type = block.type as string;
-            currentPart = { type, ...block } as OpenCodePart;
-            if (type === "text") {
-              currentPart.text = (currentPart.text as string) ?? "";
-            }
-            result.parts.push(currentPart);
-            break;
-          }
-          case "content_block_delta": {
-            const delta = data.delta as Record<string, unknown> | undefined;
-            if (!delta || delta.type !== "text") break;
-            if (currentPart?.type === "text") {
-              currentPart.text = (currentPart.text ?? "") + (delta.text as string);
-            }
-            break;
-          }
-          case "content_block_stop":
-            currentPart = null;
-            break;
-          case "error": {
-            const errData = data.error as Record<string, unknown> | undefined;
-            throw new Error(
-              `opencode stream error: ${errData?.message ?? JSON.stringify(data)}`,
-            );
-          }
-        }
-      }
-    }
 
     try {
       resetIdleTimer();
@@ -201,12 +139,7 @@ export class OpenCodeClient {
         const { done, value } = await reader.read();
         resetIdleTimer();
         if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-        for (const line of lines) {
-          flushLine(line);
-        }
+        raw += decoder.decode(value, { stream: true });
       }
     } catch (err) {
       if (err instanceof Error && err.name === "AbortError") {
@@ -219,11 +152,10 @@ export class OpenCodeClient {
       clearTimeout(idleTimer);
     }
 
-    if (buf.trim()) {
-      flushLine(buf);
-    }
+    // Consume remaining decoder buffer
+    raw += decoder.decode();
 
-    return result;
+    return JSON.parse(raw) as OpenCodeMessageResponse;
   }
 
   async shareSession(sessionId: string): Promise<string | null> {

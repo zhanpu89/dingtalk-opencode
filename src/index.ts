@@ -100,7 +100,7 @@ async function handleRobotMessage(raw: string): Promise<void> {
       if (shareUrl) {
         dingtalkReply += `\n\n🔗 [查看完整对话](${shareUrl})`;
       } else {
-        dingtalkReply += `\n\n💬 完整对话已保存 \`${sessionId.slice(0, 8)}\``;
+        dingtalkReply += `\n\n💬 会话ID: \`${sessionId.slice(0, 8)}\``;
       }
 
       log.info("sending summary reply to DingTalk", {
