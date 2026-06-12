@@ -77,6 +77,26 @@ npm run docker:build
 npm run docker:run
 ```
 
+## 关键说明
+
+### 权限配置（`opencode.json`）
+
+opencode 在 headless/server 模式下，`external_directory` 和 `doom_loop` 两个权限默认会弹交互式确认框，但由于没有 UI，请求会永久挂起直到超时。
+
+项目根目录下的 [`opencode.json`](./opencode.json) 已将这些权限设为 `"allow"`，避免卡住：
+
+```json
+{
+  "permission": {
+    "*": "allow",
+    "doom_loop": "allow",
+    "external_directory": "allow"
+  }
+}
+```
+
+如需更严格的限制，可按 [opencode 权限文档](https://opencode.ai/docs/permissions/) 调整。
+
 ## 配置说明
 
 | 环境变量 | 必填 | 默认值 | 说明 |
