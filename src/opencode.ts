@@ -98,8 +98,13 @@ export class OpenCodeClient {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const result: OpenCodeMessageResponse = {
+      info: { id: "", sessionID: sessionId, role: "assistant" },
+      parts: [],
+    };
 
+    // Phase 1: wait for initial HTTP response (connection timeout)
+    const connectTimer = setTimeout(() => controller.abort(), this.timeoutMs);
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/session/${sessionId}/message`, {
@@ -109,7 +114,7 @@ export class OpenCodeClient {
         signal: controller.signal,
       });
     } finally {
-      clearTimeout(timer);
+      clearTimeout(connectTimer);
     }
 
     if (!res.ok) {
@@ -119,16 +124,20 @@ export class OpenCodeClient {
       );
     }
 
-    const result: OpenCodeMessageResponse = {
-      info: { id: "", sessionID: sessionId, role: "assistant" },
-      parts: [],
-    };
-
+    // Phase 2: read SSE stream with per-chunk idle timeout
+    // The AbortController.signal is still associated with the response body,
+    // so aborting it will reject reader.read().
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let buf = "";
     let currentEvent = "";
     let currentPart: OpenCodePart | null = null;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), this.timeoutMs);
+    };
 
     function flushLine(line: string) {
       if (line.startsWith("event: ")) {
@@ -185,16 +194,31 @@ export class OpenCodeClient {
       }
     }
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const lines = buf.split("\n");
-      buf = lines.pop() ?? "";
-      for (const line of lines) {
-        flushLine(line);
+    try {
+      resetIdleTimer();
+
+      while (true) {
+        const { done, value } = await reader.read();
+        resetIdleTimer();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          flushLine(line);
+        }
       }
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") {
+        throw new Error(
+          `opencode stream timed out after ${this.timeoutMs}ms without data`,
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(idleTimer);
     }
+
     if (buf.trim()) {
       flushLine(buf);
     }
