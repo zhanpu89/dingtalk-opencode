@@ -301,6 +301,11 @@ describe('入口编排', () => {
       expect(mockSendTextMessage).toHaveBeenCalledWith('https://webhook', expect.stringContaining('处理失败'));
     });
 
+    it('TC-ENTRY-UNIT-010 | fetch failed 网络错误——提示网络连接失败', async () => {
+      await sendProcessingError('https://webhook', undefined, new TypeError('fetch failed'), 'sid-1234', false);
+      expect(mockSendTextMessage).toHaveBeenCalledWith('https://webhook', expect.stringContaining('网络连接失败'));
+    });
+
     it('should show server_down message when watchdog state is server_down', async () => {
       await sendProcessingError('https://webhook', 'server_down', new Error('down'), 'sid-1234', false);
       expect(mockSendTextMessage).toHaveBeenCalledWith('https://webhook', expect.stringContaining('服务不可用'));

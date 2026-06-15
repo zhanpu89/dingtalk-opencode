@@ -84,6 +84,12 @@ export async function sendProcessingError(
       webhook,
       `⚠️ **任务超时**\n\nOpenCode AI 处理时间超过 ${Math.round(config.requestTimeoutMs / 1000)} 秒，可能因为任务较复杂。\n\n建议：\n  1. 请发送 **更具体的需求**，分步执行\n  2. 可尝试重新发送当前需求\n${sessionId ? `\n💬 会话ID: \`${sessionId.slice(0, 8)}\`` : ""}`
     ).catch(() => {});
+  } else if (err instanceof TypeError && errorMsg === "fetch failed") {
+    log.error("processing failed: network error", { error: errorMsg });
+    await dingtalk.sendTextMessage(
+      webhook,
+      `❌ **网络连接失败**\n\n无法连接到 OpenCode 服务（${config.opencodeServerUrl}），请检查：\n  1. OpenCode 服务是否正在运行\n  2. 网络是否通畅\n  3. 稍后重试\n${sessionId ? `\n💬 会话ID: \`${sessionId.slice(0, 8)}\`` : ""}`
+    ).catch(() => {});
   } else {
     log.error("processing failed", { error: errorMsg, isTimeout: false });
     await dingtalk.sendTextMessage(
@@ -210,6 +216,29 @@ export async function handleRobotMessage(raw: string): Promise<void> {
         }
       } catch (err) {
         if (watchdog) watchdog.stop();
+
+        // Network error (fetch failed) → retry once for transient issues
+        const isNetworkError = err instanceof TypeError && err.message === "fetch failed";
+        if (isNetworkError && retries < maxRetries) {
+          retries++;
+          shouldRetry = true;
+
+          log.warn("retrying after network error", {
+            attempt: retries,
+            sessionKey,
+          });
+
+          try {
+            await dingtalk.sendTextMessage(
+              msg.sessionWebhook,
+              `⏳ 网络连接异常，正在重试（第 ${retries} 次）...`
+            ).catch(() => {});
+          } catch {
+            // ignore notification error
+          }
+
+          continue;
+        }
 
         // Watchdog detected session vanished → create new session and retry
         if (watchdog?.state === "restart" && retries < maxRetries) {
