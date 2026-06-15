@@ -1,74 +1,44 @@
-import crypto from "node:crypto";
 import type { DingTalkSendBody } from "./types.js";
+import { Logger } from "./logger.js";
+
+const log = new Logger("DingTalk");
 
 export class DingTalkClient {
-  private botName: string;
+  constructor(
+    private botName: string,
+  ) {}
 
-  constructor(botName: string) {
-    this.botName = botName;
-  }
-
-  verifySignature(
-    appSecret: string,
-    timestamp: string,
-    signature: string
-  ): boolean {
-    const hmac = crypto.createHmac("sha256", appSecret);
-    hmac.update(`${timestamp}\n${appSecret}`);
-    const expected = hmac.digest("base64");
-    return crypto.timingSafeEqual(
-      Buffer.from(expected),
-      Buffer.from(signature)
-    );
-  }
-
-  stripBotMention(text: string): string {
-    const atPattern = new RegExp(`@${this.botName}\\s*`, "g");
-    return text.replace(atPattern, "").trim();
-  }
-
-  async sendMessage(
+  private async send(
     webhookUrl: string,
-    content: string
+    body: DingTalkSendBody,
   ): Promise<void> {
-    const body: DingTalkSendBody = {
-      msgtype: "markdown",
-      markdown: {
-        title: "OpenCode 回复",
-        text: content,
-      },
-    };
+    try {
+      const res = await fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
 
-    const res = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      console.error(`[DingTalk] send failed: ${res.status} - ${text}`);
+      if (!res.ok) {
+        const text = await res.text();
+        log.warn("DingTalk API returned non-ok", { status: res.status, body: text.slice(0, 200) });
+      }
+    } catch (err) {
+      log.warn("DingTalk send failed (network error)", { error: String(err) });
     }
   }
 
-  async sendTextMessage(
-    webhookUrl: string,
-    content: string
-  ): Promise<void> {
-    const body: DingTalkSendBody = {
+  async sendMessage(webhookUrl: string, content: string): Promise<void> {
+    await this.send(webhookUrl, {
+      msgtype: "markdown",
+      markdown: { title: "OpenCode 回复", text: content },
+    });
+  }
+
+  async sendTextMessage(webhookUrl: string, content: string): Promise<void> {
+    await this.send(webhookUrl, {
       msgtype: "text",
       text: { content },
-    };
-
-    const res = await fetch(webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
     });
-
-    if (!res.ok) {
-      const text = await res.text();
-      console.error(`[DingTalk] send failed: ${res.status} - ${text}`);
-    }
   }
 }

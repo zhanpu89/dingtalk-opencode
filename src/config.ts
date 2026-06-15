@@ -4,7 +4,6 @@ export interface AppConfig {
   dingtalkAppKey: string;
   dingtalkAppSecret: string;
   dingtalkBotName: string;
-  port: number;
   requestTimeoutMs: number;
   rateLimitMax: number;
   rateLimitWindowMs: number;
@@ -32,7 +31,6 @@ export function loadConfig(): AppConfig {
     dingtalkAppKey: envStr("DINGTALK_APP_KEY"),
     dingtalkAppSecret: envStr("DINGTALK_APP_SECRET"),
     dingtalkBotName: envStr("DINGTALK_BOT_NAME", "OpenCode"),
-    port: envInt("PORT", 3000),
     requestTimeoutMs: envInt("REQUEST_TIMEOUT_MS", 600_000),
     rateLimitMax: envInt("RATE_LIMIT_MAX", 20),
     rateLimitWindowMs: envInt("RATE_LIMIT_WINDOW_MS", 60_000),

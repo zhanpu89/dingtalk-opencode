@@ -1,20 +1,3 @@
-export interface DingTalkCallbackBody {
-  msgtype: string;
-  text?: { content: string };
-  markdown?: { text: string; title: string };
-  msgId: string;
-  createAt: number;
-  conversationId: string;
-  conversationType: string;
-  conversationTitle: string;
-  senderId: string;
-  senderNick: string;
-  senderCorpId: string;
-  chatbotUserId: string;
-  isInAtList: boolean;
-  sessionWebhook: string;
-}
-
 export interface DingTalkSendBody {
   msgtype: string;
   text?: { content: string };

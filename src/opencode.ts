@@ -56,7 +56,7 @@ export class OpenCodeClient {
       }
       return res.json() as Promise<T>;
     } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") {
+      if (err instanceof Error && err.name === "AbortError") {
         throw new Error(
           `opencode API timeout after ${this.timeoutMs}ms on ${method} ${path}`
         );
@@ -79,9 +79,23 @@ export class OpenCodeClient {
     return this.request<OpenCodeSession>("POST", "/session", { title });
   }
 
+  /** Check if a session still exists on the server. Returns null on API error (ambiguous). */
+  async sessionExists(sessionId: string): Promise<boolean | null> {
+    try {
+      const sessions = await this.request<OpenCodeSessionListResponse[]>(
+        "GET",
+        "/session",
+      );
+      return sessions.some((s) => s.id === sessionId);
+    } catch {
+      return null; // API error, unknown state
+    }
+  }
+
   async sendMessage(
     sessionId: string,
-    text: string
+    text: string,
+    externalSignal?: AbortSignal,
   ): Promise<OpenCodeMessageResponse> {
     log.debug("sending message", {
       sessionId: sessionId.slice(0, 8),
@@ -97,7 +111,18 @@ export class OpenCodeClient {
 
     const controller = new AbortController();
 
+    // Forward external abort to internal controller
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+      }
+    }
+
     // Phase 1: wait for initial HTTP response headers
+    // The watchdog's health check handles server-down detection in parallel,
+    // but this timeout is kept as a safety net for extreme cases.
     const connectTimer = setTimeout(() => controller.abort(), this.timeoutMs);
     let res: Response;
     try {
@@ -118,42 +143,25 @@ export class OpenCodeClient {
       );
     }
 
-    // Phase 2: stream the JSON body with per-chunk idle timeout.
-    // The endpoint returns Content-Type: application/json but uses Hono's
-    // stream(), so the body arrives in chunks as the AI generates.
-    // Concatenate all chunks and parse as JSON.
+    // Phase 2: stream the JSON body.
+    // No per-chunk idle timeout — the watchdog monitors server health
+    // and session existence in parallel. If the AI is genuinely thinking
+    // for an extended period, we wait; if the server or session dies,
+    // the watchdog aborts the controller.
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let raw = "";
-    let idleTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const resetIdleTimer = () => {
-      clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => controller.abort(), this.timeoutMs);
-    };
 
     try {
-      resetIdleTimer();
-
       while (true) {
         const { done, value } = await reader.read();
-        resetIdleTimer();
         if (done) break;
         raw += decoder.decode(value, { stream: true });
       }
-    } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        throw new Error(
-          `opencode stream timed out after ${this.timeoutMs}ms without data`,
-        );
-      }
-      throw err;
     } finally {
-      clearTimeout(idleTimer);
+      // Consume remaining decoder buffer
+      raw += decoder.decode();
     }
-
-    // Consume remaining decoder buffer
-    raw += decoder.decode();
 
     return JSON.parse(raw) as OpenCodeMessageResponse;
   }
