@@ -29,6 +29,8 @@ const streamCheckIntervalMs = 60_000;
 
 /** 每个会话的连续超时次数，用于检测上下文撑爆 */
 const timeoutsPerSession = new Map<string, number>();
+/** 每个会话已处理的消息数，用于主动轮换会话 */
+const messagesPerSession = new Map<string, number>();
 const streamUnhealthyThresholdMs = 180_000;
 let shuttingDown = false;
 let lastStreamHealthyAt = Date.now();
@@ -368,6 +370,25 @@ export async function handleRobotMessage(raw: string): Promise<void> {
       try {
         currentSessionId = sessions.get(sessionKey);
 
+        // 主动检测：消息数超限 → 轮换新会话，防止上下文撑爆
+        if (currentSessionId && config.maxMessagesPerSession > 0) {
+          const count = messagesPerSession.get(sessionKey) ?? 0;
+          if (count >= config.maxMessagesPerSession) {
+            log.warn("session message limit reached, rotating session", {
+              sessionId: currentSessionId.slice(0, 8),
+              count,
+              max: config.maxMessagesPerSession,
+            });
+            sessions.delete(sessionKey);
+            currentSessionId = undefined;
+            messagesPerSession.set(sessionKey, 0);
+            await dingtalk.sendTextMessage(
+              msg.sessionWebhook,
+              `⏳ 会话消息数已达上限（${count} 条），已自动切换新会话继续处理...`
+            ).catch(() => {});
+          }
+        }
+
         if (!currentSessionId) {
           log.info("creating opencode session", { sessionKey });
           const session = await opencode.createSession(`钉钉-${msg.senderNick}`);
@@ -389,6 +410,9 @@ export async function handleRobotMessage(raw: string): Promise<void> {
         const response = await opencode.sendMessage(currentSessionId, message, abortController.signal);
         watchdog.stop();
         clearInterval(heartbeat);
+
+        const prevCount = messagesPerSession.get(sessionKey) ?? 0;
+        messagesPerSession.set(sessionKey, prevCount + 1);
 
         const { summary, changedFiles, toolNames, fullLength } = opencode.extractSummary(response);
 
@@ -432,6 +456,7 @@ export async function handleRobotMessage(raw: string): Promise<void> {
             const newSession = await opencode.createSession(`钉钉-${msg.senderNick}-${Date.now()}`);
             currentSessionId = newSession.id;
             sessions.set(sessionKey, currentSessionId);
+            messagesPerSession.set(sessionKey, 0);
             await dingtalk.sendTextMessage(
               msg.sessionWebhook,
               `⏳ OpenCode 连接中断，已切换新会话重试（第 ${retries} 次）...`
@@ -460,6 +485,7 @@ export async function handleRobotMessage(raw: string): Promise<void> {
             const newSession = await opencode.createSession(`钉钉-${msg.senderNick}`);
             currentSessionId = newSession.id;
             sessions.set(sessionKey, currentSessionId);
+            messagesPerSession.set(sessionKey, 0);
 
             await dingtalk.sendTextMessage(
               msg.sessionWebhook,
@@ -497,6 +523,7 @@ export async function handleRobotMessage(raw: string): Promise<void> {
               const newSession = await opencode.createSession(`钉钉-${msg.senderNick}`);
               currentSessionId = newSession.id;
               sessions.set(sessionKey, currentSessionId);
+              messagesPerSession.set(sessionKey, 0);
 
               await dingtalk.sendTextMessage(
                 msg.sessionWebhook,

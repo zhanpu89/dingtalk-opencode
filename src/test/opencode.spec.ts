@@ -20,6 +20,7 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     projectServerHostname: '127.0.0.1',
     projectServerIdleMs: 7_200_000,
     projectSwitchRequired: false,
+    maxMessagesPerSession: 0,
     ...overrides,
   };
 }
