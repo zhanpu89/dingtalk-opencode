@@ -1,5 +1,6 @@
 import "dotenv/config";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import { DWClient, TOPIC_ROBOT } from "dingtalk-stream";
 import type { RobotTextMessage, DWClientDownStream } from "dingtalk-stream";
 import { loadConfig } from "./config.js";
@@ -119,6 +120,38 @@ async function handleProjectCommand(message: string, msg: RobotTextMessage): Pro
       msg.sessionWebhook,
       `当前项目：${project.name}（${project.id}）\n${project.path}\n状态：${status}`
     );
+    return true;
+  }
+
+  if (["重启服务", "重启项目服务"].includes(text)) {
+    const projectId = projectContexts.get(contextKey);
+    const project = projectId ? projectRegistry.find(projectId) : undefined;
+    if (!project) {
+      await dingtalk.sendTextMessage(msg.sessionWebhook, "当前未选择项目，请先切换项目");
+      return true;
+    }
+    await dingtalk.sendTextMessage(msg.sessionWebhook, `正在重启服务：${project.name}...`);
+    try {
+      const scriptPath = path.join(project.path, "scripts", "restart_services.sh");
+      if (require("node:fs").existsSync(scriptPath) === false) {
+        await dingtalk.sendTextMessage(msg.sessionWebhook, `当前项目没有 restart_services.sh 脚本（${scriptPath}），不执行操作`);
+        return true;
+      }
+      const result = execSync(`bash "${scriptPath}"`, {
+        cwd: project.path,
+        timeout: 15_000,
+        shell: "/bin/bash",
+      }).toString().trim();
+      await dingtalk.sendTextMessage(
+        msg.sessionWebhook,
+        `✅ 服务重启完成：${project.name}\n\`\`\`\n${result}\n\`\`\``
+      );
+    } catch (err) {
+      await dingtalk.sendTextMessage(
+        msg.sessionWebhook,
+        `❌ 重启失败：${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     return true;
   }
 
