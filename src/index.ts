@@ -26,6 +26,9 @@ const projectServers = new ProjectServerManager(config);
 const projectClients = new Map<string, OpenCodeClient>();
 const queue = new MessageQueue();
 const streamCheckIntervalMs = 60_000;
+
+/** 每个会话的连续超时次数，用于检测上下文撑爆 */
+const timeoutsPerSession = new Map<string, number>();
 const streamUnhealthyThresholdMs = 180_000;
 let shuttingDown = false;
 let lastStreamHealthyAt = Date.now();
@@ -472,8 +475,47 @@ export async function handleRobotMessage(raw: string): Promise<void> {
           continue;
         }
 
-        clearInterval(heartbeat);
+        // Context overload: consecutive timeouts mean session context is bloated
+        // → invalidate stale session so next request starts fresh
         const isTimeout = err instanceof Error && err.name === "AbortError";
+        if (isTimeout) {
+          const prev = timeoutsPerSession.get(sessionKey) ?? 0;
+          timeoutsPerSession.set(sessionKey, prev + 1);
+          if (prev + 1 >= 2 && retries < maxRetries) {
+            retries++;
+            shouldRetry = true;
+            timeoutsPerSession.set(sessionKey, 0);
+            sessions.delete(sessionKey);
+
+            log.warn("context overload detected, starting new session", {
+              attempt: retries,
+              oldSessionId: currentSessionId?.slice(0, 8),
+              sessionKey,
+            });
+
+            try {
+              const newSession = await opencode.createSession(`钉钉-${msg.senderNick}`);
+              currentSessionId = newSession.id;
+              sessions.set(sessionKey, currentSessionId);
+
+              await dingtalk.sendTextMessage(
+                msg.sessionWebhook,
+                `⏳ 上下文已满，已切换新会话继续处理（第 ${retries} 次重试）...`
+              ).catch(() => {});
+            } catch (retryErr) {
+              log.error("retry session creation failed", { error: String(retryErr) });
+              shouldRetry = false;
+              clearInterval(heartbeat);
+              await sendProcessingError(msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false);
+            }
+
+            continue;
+          }
+        } else {
+          timeoutsPerSession.set(sessionKey, 0);
+        }
+
+        clearInterval(heartbeat);
         await sendProcessingError(msg.sessionWebhook, watchdog?.state, err, sessionId, isTimeout);
       }
     } while (shouldRetry);

@@ -69,6 +69,11 @@ export class SessionStore {
     this.scheduleSave();
   }
 
+  delete(key: string): void {
+    this.map.delete(key);
+    this.scheduleSave();
+  }
+
   size(): number {
     return this.map.size;
   }
