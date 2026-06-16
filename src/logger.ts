@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
 const LEVELS = ["DEBUG", "INFO", "WARN", "ERROR"] as const;
 type Level = (typeof LEVELS)[number];
 
@@ -8,6 +11,7 @@ const COLORS: Record<Level, string> = {
   ERROR: "\x1b[31m",
 };
 const RESET = "\x1b[0m";
+const LOG_FILE = process.env.LOG_FILE || `${process.env.DATA_DIR || "data"}/app.log`;
 
 export class Logger {
   private name: string;
@@ -23,11 +27,12 @@ export class Logger {
     if (idx < LEVELS.indexOf(this.minLevel)) return;
 
     const ts = new Date().toISOString();
+    const plainPrefix = `[${ts}] [${level.padEnd(5)}] [${this.name}]`;
     const color = COLORS[level];
-    const prefix = `${color}[${ts}] [${level.padEnd(5)}] [${this.name}]${RESET}`;
-    const line = data
-      ? `${prefix} ${msg} ${JSON.stringify(data)}`
-      : `${prefix} ${msg}`;
+    const prefix = `${color}${plainPrefix}${RESET}`;
+    const suffix = data ? ` ${msg} ${JSON.stringify(data)}` : ` ${msg}`;
+    const line = `${prefix}${suffix}`;
+    const plainLine = `${plainPrefix}${suffix}`;
 
     if (level === "ERROR") {
       console.error(line);
@@ -35,6 +40,12 @@ export class Logger {
       console.warn(line);
     } else {
       console.log(line);
+    }
+
+    try {
+      mkdirSync(dirname(LOG_FILE), { recursive: true });
+      appendFileSync(LOG_FILE, `${plainLine}\n`);
+    } catch {
     }
   }
 

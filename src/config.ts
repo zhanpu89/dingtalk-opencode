@@ -9,6 +9,12 @@ export interface AppConfig {
   rateLimitWindowMs: number;
   logLevel: string;
   dataDir: string;
+  projectsConfigPath: string;
+  allowedProjectRoots: string[];
+  projectServerPortStart: number;
+  projectServerHostname: string;
+  projectServerIdleMs: number;
+  projectSwitchRequired: boolean;
 }
 
 function envStr(key: string, fallback = ""): string {
@@ -24,6 +30,19 @@ function envInt(key: string, fallback: number): number {
   return fallback;
 }
 
+function envBool(key: string, fallback: boolean): boolean {
+  const v = process.env[key];
+  if (!v) return fallback;
+  return ["1", "true", "yes", "on"].includes(v.toLowerCase());
+}
+
+function envList(key: string): string[] {
+  return envStr(key)
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
 export function loadConfig(): AppConfig {
   return {
     opencodeServerUrl: envStr("OPENCODE_SERVER_URL", "http://localhost:4096"),
@@ -36,5 +55,11 @@ export function loadConfig(): AppConfig {
     rateLimitWindowMs: envInt("RATE_LIMIT_WINDOW_MS", 60_000),
     logLevel: envStr("LOG_LEVEL", "INFO"),
     dataDir: envStr("DATA_DIR", "data"),
+    projectsConfigPath: envStr("PROJECTS_CONFIG_PATH", "projects.json"),
+    allowedProjectRoots: envList("ALLOWED_PROJECT_ROOTS"),
+    projectServerPortStart: envInt("PROJECT_SERVER_PORT_START", 4100),
+    projectServerHostname: envStr("PROJECT_SERVER_HOSTNAME", "127.0.0.1"),
+    projectServerIdleMs: envInt("PROJECT_SERVER_IDLE_MS", 7_200_000),
+    projectSwitchRequired: envBool("PROJECT_SWITCH_REQUIRED", false),
   };
 }

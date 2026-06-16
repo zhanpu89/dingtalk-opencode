@@ -14,13 +14,19 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     rateLimitWindowMs: 60_000,
     logLevel: 'INFO',
     dataDir: 'data',
+    projectsConfigPath: 'projects.json',
+    allowedProjectRoots: [],
+    projectServerPortStart: 4100,
+    projectServerHostname: '127.0.0.1',
+    projectServerIdleMs: 7_200_000,
+    projectSwitchRequired: false,
     ...overrides,
   };
 }
 
-function createMockStream(chunks: string[]): ReadableStream<Uint8Array> {
+function createMockStream(chunks: string[]): ReadableStream<Uint8Array<ArrayBuffer>> {
   const encoder = new TextEncoder();
-  return new ReadableStream({
+  return new ReadableStream<Uint8Array<ArrayBuffer>>({
     async pull(controller) {
       for (const chunk of chunks) {
         controller.enqueue(encoder.encode(chunk));

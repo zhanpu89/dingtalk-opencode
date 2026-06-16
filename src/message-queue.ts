@@ -11,8 +11,18 @@ export class MessageQueue {
   ): Promise<void> {
     const prev = this.chains.get(sessionKey) ?? Promise.resolve();
     const next = prev.then(() => fn(), () => fn());
-    this.chains.set(sessionKey, next.catch(() => {}));
+    const tracked = next.catch(() => {});
+    this.chains.set(sessionKey, tracked);
+    tracked.finally(() => {
+      if (this.chains.get(sessionKey) === tracked) {
+        this.chains.delete(sessionKey);
+      }
+    }).catch(() => {});
     return next;
+  }
+
+  isBusy(sessionKey: string): boolean {
+    return this.chains.has(sessionKey);
   }
 
   pendingCount(): number {

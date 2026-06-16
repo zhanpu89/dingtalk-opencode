@@ -3,6 +3,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockSendTextMessage = vi.fn().mockResolvedValue(undefined);
 const mockSendMessage = vi.fn().mockResolvedValue(undefined);
 const mockEnqueue = vi.fn();
+const mockIsBusy = vi.fn().mockReturnValue(false);
+const mockConnect = vi.fn().mockResolvedValue(undefined);
+let mockDwClientInstance: any;
 const mockGet = vi.fn();
 const mockSet = vi.fn();
 const mockCreateSession = vi.fn();
@@ -16,12 +19,16 @@ const mockStop = vi.fn();
 
 vi.mock('dotenv/config');
 vi.mock('dingtalk-stream', () => ({
-  DWClient: vi.fn(function MockDWClient() {
+  DWClient: vi.fn(function MockDWClient(this: any) {
+    this.connected = false;
+    this.registered = false;
+    this.reconnecting = false;
     this.registerCallbackListener = vi.fn();
     this.on = vi.fn();
-    this.connect = vi.fn().mockResolvedValue(undefined);
+    this.connect = mockConnect;
     this.disconnect = vi.fn();
     this.socketCallBackResponse = vi.fn();
+    mockDwClientInstance = this;
   }),
   TOPIC_ROBOT: 'TOPIC_ROBOT',
 }));
@@ -41,7 +48,7 @@ vi.mock('../config.js', () => ({
   AppConfig: {},
 }));
 vi.mock('../opencode.js', () => ({
-  OpenCodeClient: vi.fn(function MockOpenCodeClient() {
+  OpenCodeClient: vi.fn(function MockOpenCodeClient(this: any) {
     this.createSession = mockCreateSession;
     this.sendMessage = mockSendMessageOapi;
     this.sessionExists = mockSessionExists;
@@ -51,13 +58,13 @@ vi.mock('../opencode.js', () => ({
   }),
 }));
 vi.mock('../dingtalk.js', () => ({
-  DingTalkClient: vi.fn(function MockDingTalkClient() {
+  DingTalkClient: vi.fn(function MockDingTalkClient(this: any) {
     this.sendMessage = mockSendMessage;
     this.sendTextMessage = mockSendTextMessage;
   }),
 }));
 vi.mock('../session-store.js', () => ({
-  SessionStore: vi.fn(function MockSessionStore() {
+  SessionStore: vi.fn(function MockSessionStore(this: any) {
     this.get = mockGet;
     this.set = mockSet;
     this.size = vi.fn().mockReturnValue(0);
@@ -65,26 +72,28 @@ vi.mock('../session-store.js', () => ({
   }),
 }));
 vi.mock('../message-queue.js', () => ({
-  MessageQueue: vi.fn(function MockMessageQueue() {
+  MessageQueue: vi.fn(function MockMessageQueue(this: any) {
     this.enqueue = mockEnqueue;
+    this.isBusy = mockIsBusy;
     this.pendingCount = vi.fn().mockReturnValue(0);
   }),
 }));
 vi.mock('../watchdog.js', () => ({
-  Watchdog: vi.fn(function MockWatchdog() {
+  Watchdog: vi.fn(function MockWatchdog(this: any) {
     this.start = mockStart;
     this.stop = mockStop;
     this.state = 'running';
   }),
 }));
 
-const { buildReplyMessage, sendProcessingError, handleRobotMessage, getSessionKey, stripBotMention } = await import('../index.js');
+const { buildReplyMessage, sendProcessingError, handleRobotMessage, getSessionKey, stripBotMention, startStreamSupervisor } = await import('../index.js');
 
 describe('入口编排', () => {
   let capturedFn: (() => Promise<void>) | null;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsBusy.mockReturnValue(false);
     capturedFn = null;
     mockEnqueue.mockImplementation((_key: string, fn: () => Promise<void>) => {
       capturedFn = fn;
@@ -93,9 +102,29 @@ describe('入口编排', () => {
   });
 
   describe('getSessionKey', () => {
-    it('should compose session key from conversationId and senderId', () => {
+    it('should compose session key from conversationId and sender id', () => {
       const msg = { conversationId: 'conv1', senderId: 'user1' } as any;
-      expect(getSessionKey(msg)).toBe('conv1:user1');
+      expect(getSessionKey(msg)).toBe('default:conv1:user1');
+      expect(getSessionKey(msg, 'stock')).toBe('stock:conv1:user1');
+    });
+
+    it('should prefer senderStaffId for session key', () => {
+      const msg = { conversationId: 'conv1', senderId: 'user1', senderStaffId: 'staff1' } as any;
+      expect(getSessionKey(msg, 'stock')).toBe('stock:conv1:staff1');
+    });
+  });
+
+  describe('startStreamSupervisor', () => {
+    it('should reconnect when stream remains disconnected', async () => {
+      vi.useFakeTimers();
+      mockDwClientInstance.connected = false;
+      mockDwClientInstance.registered = false;
+      mockDwClientInstance.reconnecting = false;
+      const timer = startStreamSupervisor();
+      await vi.advanceTimersByTimeAsync(240_000);
+      expect(mockConnect).toHaveBeenCalled();
+      clearInterval(timer);
+      vi.useRealTimers();
     });
   });
 

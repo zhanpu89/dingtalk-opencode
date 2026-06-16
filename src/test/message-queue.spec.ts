@@ -44,15 +44,24 @@ describe('MessageQueue', () => {
 
   it('TC-QUEUE-UNIT-004 | pendingCount——入队后返回正确计数', async () => {
     const q = new MessageQueue();
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     expect(q.pendingCount()).toBe(0);
-    q.enqueue('key1', async () => {});
+    const p1 = q.enqueue('key1', async () => blocked);
     expect(q.pendingCount()).toBe(1);
-    q.enqueue('key2', async () => {});
+    expect(q.isBusy('key1')).toBe(true);
+    const p2 = q.enqueue('key2', async () => blocked);
     expect(q.pendingCount()).toBe(2);
+    release();
+    await Promise.all([p1, p2]);
+    expect(q.pendingCount()).toBe(0);
   });
 
   it('TC-QUEUE-UNIT-005 | pendingCount——空队列返回 0', async () => {
     const q = new MessageQueue();
     expect(q.pendingCount()).toBe(0);
+    expect(q.isBusy('key1')).toBe(false);
   });
 });

@@ -1,0 +1,8 @@
+[
+  {
+    "id": "bot",
+    "name": "钉钉中间件",
+    "path": "/root/project/dingtalk-opencode",
+    "description": "钉钉机器人到 OpenCode 的桥接服务"
+  }
+]

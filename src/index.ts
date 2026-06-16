@@ -1,4 +1,5 @@
 import "dotenv/config";
+import path from "node:path";
 import { DWClient, TOPIC_ROBOT } from "dingtalk-stream";
 import type { RobotTextMessage, DWClientDownStream } from "dingtalk-stream";
 import { loadConfig } from "./config.js";
@@ -8,20 +9,153 @@ import { SessionStore } from "./session-store.js";
 import { MessageQueue } from "./message-queue.js";
 import { Logger } from "./logger.js";
 import { Watchdog } from "./watchdog.js";
+import { ProjectRegistry, type ProjectConfig } from "./project-registry.js";
+import { ProjectServerManager } from "./project-server-manager.js";
+import { ProjectContextStore } from "./project-context-store.js";
 
 const config = loadConfig();
 const log = new Logger("Server", config.logLevel as never);
-const opencode = new OpenCodeClient(config);
+const defaultOpencode = new OpenCodeClient(config);
 const dingtalk = new DingTalkClient(config.dingtalkBotName);
 const sessions = new SessionStore(`${config.dataDir}/session-map.json`);
+const projectContexts = new ProjectContextStore(`${config.dataDir}/project-context.json`);
+projectContexts.clearAll();
+const projectRegistry = new ProjectRegistry(config.projectsConfigPath, config.allowedProjectRoots);
+const projectServers = new ProjectServerManager(config);
+const projectClients = new Map<string, OpenCodeClient>();
 const queue = new MessageQueue();
+const streamCheckIntervalMs = 60_000;
+const streamUnhealthyThresholdMs = 180_000;
+let shuttingDown = false;
+let lastStreamHealthyAt = Date.now();
+let streamSupervisor: ReturnType<typeof setInterval> | undefined;
 
-export function getSessionKey(msg: RobotTextMessage): string {
-  return `${msg.conversationId}:${msg.senderId}`;
+export function getSessionKey(msg: RobotTextMessage, projectId = "default"): string {
+  return `${projectId}:${msg.conversationId}:${msg.senderStaffId || msg.senderId}`;
+}
+
+function getContextKey(msg: RobotTextMessage): string {
+  return `${msg.conversationId}:${msg.senderStaffId || msg.senderId}`;
 }
 
 export function stripBotMention(text: string): string {
   return text.replace(new RegExp(`@${config.dingtalkBotName}\\s*`, "g"), "").trim();
+}
+
+function isDefaultServerProject(project: ProjectConfig): boolean {
+  return project.path === path.resolve(process.cwd());
+}
+
+function getDefaultServerPort(): string {
+  try {
+    const url = new URL(config.opencodeServerUrl);
+    return url.port || (url.protocol === "https:" ? "443" : "80");
+  } catch {
+    return config.opencodeServerUrl;
+  }
+}
+
+async function buildProjectListMessage(): Promise<string> {
+  const projects = projectRegistry.list();
+  const defaultHealthy = await defaultOpencode.health();
+  const rows = [
+    "| 编号 | 项目名称 | 状态 | 路径 |",
+    "|------|----------|------|------|",
+  ];
+
+  for (const project of projects) {
+    const instance = await projectServers.getHealthy(project.id);
+    const status = instance?.status === "running"
+      ? `运行中:${instance.port}`
+      : isDefaultServerProject(project) && defaultHealthy
+        ? `运行中:${getDefaultServerPort()}`
+        : "未启动";
+    rows.push(`| ${project.id} | ${project.name} | ${status} | ${project.path} |`);
+  }
+
+  return rows.join("\n");
+}
+
+async function ensureProjectBaseUrl(project: ProjectConfig): Promise<string> {
+  if (isDefaultServerProject(project)) return config.opencodeServerUrl;
+  return (await projectServers.ensureStarted(project)).baseUrl;
+}
+
+async function ensureProjectClient(project: ProjectConfig): Promise<OpenCodeClient> {
+  if (isDefaultServerProject(project)) return defaultOpencode;
+
+  const baseUrl = await ensureProjectBaseUrl(project);
+  const existing = projectClients.get(project.id);
+  if (existing) return existing;
+  const client = new OpenCodeClient(config, baseUrl);
+  projectClients.set(project.id, client);
+  return client;
+}
+
+async function handleProjectCommand(message: string, msg: RobotTextMessage): Promise<boolean> {
+  const text = message.trim();
+  const contextKey = getContextKey(msg);
+
+  if (["项目列表", "获取所有项目"].includes(text)) {
+    await dingtalk.sendMessage(msg.sessionWebhook, await buildProjectListMessage());
+    return true;
+  }
+
+  if (text === "当前项目") {
+    const projectId = projectContexts.get(contextKey);
+    const project = projectId ? projectRegistry.find(projectId) : undefined;
+    if (!project) {
+      await dingtalk.sendTextMessage(msg.sessionWebhook, "当前未选择项目");
+      return true;
+    }
+
+    const instance = await projectServers.getHealthy(project.id);
+    const status = instance?.status === "running"
+      ? `运行中:${instance.port}`
+      : isDefaultServerProject(project) && await defaultOpencode.health()
+        ? `运行中:${getDefaultServerPort()}`
+        : "未启动";
+    await dingtalk.sendTextMessage(
+      msg.sessionWebhook,
+      `当前项目：${project.name}（${project.id}）\n${project.path}\n状态：${status}`
+    );
+    return true;
+  }
+
+  if (text === "重置项目") {
+    projectContexts.delete(contextKey);
+    await dingtalk.sendTextMessage(msg.sessionWebhook, "已重置项目，后续将使用默认 OpenCode 服务");
+    return true;
+  }
+
+  const match = text.match(/^(切换项目|使用项目)\s+(.+)$/);
+  if (!match) return false;
+
+  const identifier = match[2].trim();
+  const project = projectRegistry.find(identifier);
+  if (!project) {
+    await dingtalk.sendTextMessage(msg.sessionWebhook, `未找到项目：${identifier}\n请发送“项目列表”查看可用项目`);
+    return true;
+  }
+
+  const currentProjectId = projectContexts.get(contextKey);
+  await dingtalk.sendTextMessage(
+    msg.sessionWebhook,
+    currentProjectId === project.id
+      ? `当前已在项目：${project.name}（${project.id}），正在确认服务状态...`
+      : `正在启动/切换项目：${project.name}（${project.id}）...`
+  );
+  try {
+    const baseUrl = await ensureProjectBaseUrl(project);
+    projectContexts.set(contextKey, project.id);
+    await dingtalk.sendTextMessage(
+      msg.sessionWebhook,
+      `${currentProjectId === project.id ? "当前已在项目" : "已切换到项目"}：${project.name}（${project.id}）\n路径：${project.path}\n服务：${baseUrl}`
+    );
+  } catch (err) {
+    await dingtalk.sendTextMessage(msg.sessionWebhook, `项目启动失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+  return true;
 }
 
 export function buildReplyMessage(
@@ -125,19 +259,49 @@ export async function handleRobotMessage(raw: string): Promise<void> {
     log.debug("empty message after stripping mention");
     await dingtalk.sendTextMessage(
       msg.sessionWebhook,
-      `你好 ${msg.senderNick} 👋\n\n我是 OpenCode AI 编程助手，请直接发送需求，我来帮你处理。例如：\n  • "帮我写一个 Python 脚本读取 CSV"\n  • "修复这个项目的登录 Bug"\n  • "给 User 模型添加 email 字段"`
+      `你好 ${msg.senderNick} 👋\n\n我是 OpenCode AI 编程助手，请直接发送需求，我来帮你处理。例如：\n  • "项目列表"\n  • "切换项目 stock"\n  • "修复这个项目的登录 Bug"`
     );
     return;
   }
 
+  if (await handleProjectCommand(message, msg)) return;
+
+  const contextKey = getContextKey(msg);
+  const projectId = projectContexts.get(contextKey);
+  const project = projectId ? projectRegistry.find(projectId) : undefined;
+
+  if (config.projectSwitchRequired && !project) {
+    await dingtalk.sendTextMessage(msg.sessionWebhook, "请先发送“项目列表”，再使用“切换项目 <编号>”选择项目");
+    return;
+  }
+
+  const activeProjectId = project?.id ?? "default";
+  const sessionKey = getSessionKey(msg, activeProjectId);
+  const queued = queue.isBusy(sessionKey);
+  let activeOpencode = defaultOpencode;
+
+  if (project) {
+    try {
+      activeOpencode = await ensureProjectClient(project);
+    } catch (err) {
+      projectContexts.delete(contextKey);
+      await dingtalk.sendTextMessage(
+        msg.sessionWebhook,
+        `项目服务启动失败，已清除当前项目：${err instanceof Error ? err.message : String(err)}\n请发送“项目列表”确认状态后重新切换项目`
+      );
+      return;
+    }
+  }
+
   await dingtalk.sendTextMessage(
     msg.sessionWebhook,
-    `⏳ 已收到消息，正在用 OpenCode AI 处理中...\n\n> ${message.slice(0, 100)}${message.length > 100 ? "..." : ""}\n\n请稍候，处理完成后会通知您。`
+    queued
+      ? `⏳ 已收到消息，当前会话还有任务在处理中，本次请求已排队...\n\n> ${message.slice(0, 100)}${message.length > 100 ? "..." : ""}`
+      : `⏳ 已收到消息，正在用 OpenCode AI 处理中...\n\n> ${message.slice(0, 100)}${message.length > 100 ? "..." : ""}\n\n请稍候，处理完成后会通知您。`
   );
 
-  const sessionKey = getSessionKey(msg);
-
   queue.enqueue(sessionKey, async () => {
+    const opencode = activeOpencode;
     let sessionId: string | undefined;
     let heartbeatCount = 0;
     const heartbeat = setInterval(async () => {
@@ -217,24 +381,30 @@ export async function handleRobotMessage(raw: string): Promise<void> {
       } catch (err) {
         if (watchdog) watchdog.stop();
 
-        // Network error (fetch failed) → retry once for transient issues
         const isNetworkError = err instanceof TypeError && err.message === "fetch failed";
         if (isNetworkError && retries < maxRetries) {
           retries++;
           shouldRetry = true;
 
-          log.warn("retrying after network error", {
+          log.warn("retrying with new session after network error", {
             attempt: retries,
+            oldSessionId: currentSessionId?.slice(0, 8),
             sessionKey,
           });
 
           try {
+            const newSession = await opencode.createSession(`钉钉-${msg.senderNick}-${Date.now()}`);
+            currentSessionId = newSession.id;
+            sessions.set(sessionKey, currentSessionId);
             await dingtalk.sendTextMessage(
               msg.sessionWebhook,
-              `⏳ 网络连接异常，正在重试（第 ${retries} 次）...`
+              `⏳ OpenCode 连接中断，已切换新会话重试（第 ${retries} 次）...`
             ).catch(() => {});
-          } catch {
-            // ignore notification error
+          } catch (retryErr) {
+            log.error("retry session creation failed", { error: String(retryErr) });
+            shouldRetry = false;
+            clearInterval(heartbeat);
+            await sendProcessingError(msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false);
           }
 
           continue;
@@ -290,27 +460,57 @@ const client = new DWClient({
   clientId: config.dingtalkAppKey,
   clientSecret: config.dingtalkAppSecret,
   debug: config.logLevel === "DEBUG",
+  keepAlive: true,
 });
 
 client.registerCallbackListener(TOPIC_ROBOT, (downstream: DWClientDownStream) => {
+  lastStreamHealthyAt = Date.now();
   client.socketCallBackResponse(downstream.headers.messageId, { status: "SUCCESS" });
   handleRobotMessage(downstream.data);
 });
 
-client.on("connected", () => {
-  log.info("DingTalk Stream connected");
-});
+function isStreamHealthy(): boolean {
+  return client.connected === true;
+}
 
-client.on("disconnected", () => {
-  log.warn("DingTalk Stream disconnected");
-});
+async function reconnectDingTalkStream(reason: string): Promise<void> {
+  if (shuttingDown || client.reconnecting) return;
+  log.warn("reconnecting DingTalk Stream", { reason });
+  try {
+    await client.connect();
+    lastStreamHealthyAt = Date.now();
+  } catch (err) {
+    log.error("DingTalk Stream reconnect failed", { error: String(err) });
+  }
+}
 
-client.on("error", (err) => {
-  log.error("DingTalk Stream error", { error: String(err) });
-});
+export function startStreamSupervisor(): ReturnType<typeof setInterval> {
+  return setInterval(() => {
+    if (shuttingDown) return;
+
+    if (isStreamHealthy()) {
+      lastStreamHealthyAt = Date.now();
+      return;
+    }
+
+    const unhealthyMs = Date.now() - lastStreamHealthyAt;
+    log.warn("DingTalk Stream unhealthy", {
+      connected: client.connected,
+      registered: client.registered,
+      reconnecting: client.reconnecting,
+      unhealthyMs,
+    });
+
+    if (unhealthyMs >= streamUnhealthyThresholdMs) {
+      void reconnectDingTalkStream("supervisor detected unhealthy stream");
+    }
+  }, streamCheckIntervalMs);
+}
 
 try {
   await client.connect();
+  lastStreamHealthyAt = Date.now();
+  streamSupervisor = startStreamSupervisor();
   log.info("DingTalk Stream client started successfully");
 } catch (err) {
   log.error("failed to connect DingTalk Stream", { error: String(err) });
@@ -318,9 +518,13 @@ try {
 }
 
 function shutdown(signal: string): void {
+  shuttingDown = true;
   log.info(`received ${signal}, shutting down...`);
+  if (streamSupervisor) clearInterval(streamSupervisor);
   client.disconnect();
+  if (signal === "SIGINT") projectServers.stopAll();
   sessions.flush();
+  projectContexts.flush();
   log.info("goodbye");
   process.exit(0);
 }

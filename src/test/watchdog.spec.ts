@@ -2,11 +2,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Watchdog } from '../watchdog.js';
 import type { OpenCodeClient } from '../opencode.js';
 
-function createMockOpenCodeClient(): jest.Mocked<OpenCodeClient> {
+function createMockOpenCodeClient(): OpenCodeClient & {
+  health: ReturnType<typeof vi.fn>;
+  sessionExists: ReturnType<typeof vi.fn>;
+} {
   return {
     health: vi.fn(),
     sessionExists: vi.fn(),
-  } as unknown as jest.Mocked<OpenCodeClient>;
+  } as unknown as OpenCodeClient & {
+    health: ReturnType<typeof vi.fn>;
+    sessionExists: ReturnType<typeof vi.fn>;
+  };
 }
 
 describe('Watchdog', () => {

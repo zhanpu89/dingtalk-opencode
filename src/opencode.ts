@@ -14,8 +14,8 @@ export class OpenCodeClient {
   private authHeader: string | null;
   private timeoutMs: number;
 
-  constructor(config: AppConfig) {
-    this.baseUrl = config.opencodeServerUrl;
+  constructor(config: AppConfig, baseUrl?: string) {
+    this.baseUrl = baseUrl ?? config.opencodeServerUrl;
     this.timeoutMs = config.requestTimeoutMs;
     this.authHeader = config.opencodeServerPassword
       ? "Basic " +
@@ -143,23 +143,26 @@ export class OpenCodeClient {
       );
     }
 
-    // Phase 2: stream the JSON body.
-    // No per-chunk idle timeout — the watchdog monitors server health
-    // and session existence in parallel. If the AI is genuinely thinking
-    // for an extended period, we wait; if the server or session dies,
-    // the watchdog aborts the controller.
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let raw = "";
+    const idleTimeoutMs = this.timeoutMs;
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => controller.abort(), idleTimeoutMs);
+    };
 
     try {
+      resetIdleTimer();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         raw += decoder.decode(value, { stream: true });
+        resetIdleTimer();
       }
     } finally {
-      // Consume remaining decoder buffer
+      if (idleTimer) clearTimeout(idleTimer);
       raw += decoder.decode();
     }
 
