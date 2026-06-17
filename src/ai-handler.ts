@@ -110,14 +110,15 @@ export async function processAIMessage(
   const heartbeat = setInterval(async () => {
     heartbeatCount++;
     try {
+      const minutes = heartbeatCount * 5;
       await dingtalk.sendTextMessage(
         msg.sessionWebhook,
-        `⏳ 任务仍在处理中，已等待 ${heartbeatCount * 60} 秒... ${heartbeatCount >= 3 ? "复杂任务可能需要更长时间，请耐心等待" : ""}`
+        `⏳ 任务仍在处理中，已等待 ${minutes} 分钟... ${minutes >= 15 ? "复杂任务可能需要更长时间，请耐心等待" : ""}`
       );
     } catch {
       // webhook may expire after long idle; ignore heartbeat errors
     }
-  }, 60_000);
+  }, 300_000);
 
   let currentSessionId: string | undefined;
   let retries = 0;
