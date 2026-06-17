@@ -146,25 +146,15 @@ export class OpenCodeClient {
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let raw = "";
-    // 总超时：从开始到结束的硬限制，独立于空闲超时
+    // 总超时硬限制（opencode 返回完整 JSON，不会 SSE 流式，所以只设总超时）
     const totalTimer = setTimeout(() => controller.abort(), this.timeoutMs);
-    // 空闲超时：连续 N 毫秒无数据到达则中断
-    let idleTimer: ReturnType<typeof setTimeout> | undefined;
-    const resetIdleTimer = () => {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => controller.abort(), 120_000);
-    };
-
     try {
-      resetIdleTimer();
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         raw += decoder.decode(value, { stream: true });
-        resetIdleTimer();
       }
     } finally {
-      if (idleTimer) clearTimeout(idleTimer);
       clearTimeout(totalTimer);
       raw += decoder.decode();
     }
