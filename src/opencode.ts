@@ -146,11 +146,13 @@ export class OpenCodeClient {
     const reader = res.body!.getReader();
     const decoder = new TextDecoder();
     let raw = "";
-    const idleTimeoutMs = this.timeoutMs;
+    // 总超时：从开始到结束的硬限制，独立于空闲超时
+    const totalTimer = setTimeout(() => controller.abort(), this.timeoutMs);
+    // 空闲超时：连续 N 毫秒无数据到达则中断
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     const resetIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => controller.abort(), idleTimeoutMs);
+      idleTimer = setTimeout(() => controller.abort(), 120_000);
     };
 
     try {
@@ -163,6 +165,7 @@ export class OpenCodeClient {
       }
     } finally {
       if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(totalTimer);
       raw += decoder.decode();
     }
 
