@@ -7,13 +7,11 @@ const log = new Logger("SessionStore");
 export class SessionStore {
   private map: Map<string, string>;
   private filePath: string;
-  private dirty: boolean;
   private saveTimer: ReturnType<typeof setTimeout> | null;
 
   constructor(filePath?: string) {
     this.map = new Map();
     this.filePath = filePath || path.resolve("data", "session-map.json");
-    this.dirty = false;
     this.saveTimer = null;
     this.load();
   }
@@ -32,19 +30,28 @@ export class SessionStore {
       }
       log.info("session store loaded", { entries: this.map.size });
     } catch (err) {
-      log.error("failed to load session store", { error: String(err) });
+      log.error("failed to load session store, trying backup", { error: String(err) });
+      try {
+        if (fs.existsSync(this.filePath + ".bak")) {
+          const bakRaw = fs.readFileSync(this.filePath + ".bak", "utf-8");
+          const bakData = JSON.parse(bakRaw) as Record<string, string>;
+          for (const [k, v] of Object.entries(bakData)) {
+            this.map.set(k, v);
+          }
+          log.info("session store recovered from backup", { entries: this.map.size });
+          return;
+        }
+      } catch { /* backup also corrupt */ }
+      log.error("backup also corrupt, starting with empty map");
     }
   }
 
   private scheduleSave(): void {
-    this.dirty = true;
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => this.flush(), 2000);
   }
 
   flush(): void {
-    if (!this.dirty) return;
-    this.dirty = false;
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -54,9 +61,14 @@ export class SessionStore {
       for (const [k, v] of this.map) {
         obj[k] = v;
       }
-      fs.writeFileSync(this.filePath, JSON.stringify(obj, null, 2), "utf-8");
+      const jsonStr = JSON.stringify(obj, null, 2);
+      const tmpPath = this.filePath + ".tmp";
+      const bakPath = this.filePath + ".bak";
+      fs.writeFileSync(tmpPath, jsonStr, "utf-8");
+      try { fs.renameSync(this.filePath, bakPath); } catch { /* 首次写入无旧文件 */ }
+      fs.renameSync(tmpPath, this.filePath);
     } catch (err) {
-      log.error("failed to save session store", { error: String(err) });
+      log.error("failed to flush session store", { error: String(err) });
     }
   }
 

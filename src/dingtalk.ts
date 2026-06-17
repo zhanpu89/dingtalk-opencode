@@ -28,10 +28,10 @@ export class DingTalkClient {
     }
   }
 
-  async sendMessage(webhookUrl: string, content: string): Promise<void> {
+  async sendMessage(webhookUrl: string, content: { title: string; text: string }): Promise<void> {
     await this.send(webhookUrl, {
       msgtype: "markdown",
-      markdown: { title: "OpenCode 回复", text: content },
+      markdown: { title: content.title, text: content.text },
     });
   }
 

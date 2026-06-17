@@ -15,7 +15,7 @@ export function buildReplyMessage(
   fullLength: number,
   shareUrl: string | null,
   sessionId: string,
-): string {
+): { title: string; text: string } {
   const parts: string[] = ["**✅ 任务完成**", ""];
 
   if (summary && summary !== "(无文本回复)") {
@@ -44,7 +44,7 @@ export function buildReplyMessage(
     parts.push(`💬 会话ID: \`${sessionId.slice(0, 8)}\``);
   }
 
-  return parts.join("\n");
+  return { title: "OpenCode 任务完成", text: parts.join("\n") };
 }
 
 export async function sendProcessingError(
@@ -90,8 +90,6 @@ export interface AIMessageContext {
   dingtalk: DingTalkClient;
   config: AppConfig;
   sessions: SessionStore;
-  messagesPerSession: Map<string, number>;
-  timeoutsPerSession: Map<string, number>;
 }
 
 /**
@@ -104,21 +102,20 @@ export async function processAIMessage(
   message: string,
   msg: RobotTextMessage,
 ): Promise<void> {
-  const { opencode, dingtalk, config, sessions, messagesPerSession, timeoutsPerSession } = ctx;
+  const { opencode, dingtalk, config, sessions } = ctx;
   let sessionId: string | undefined;
   let heartbeatCount = 0;
   const heartbeat = setInterval(async () => {
     heartbeatCount++;
     try {
-      const minutes = heartbeatCount * 5;
       await dingtalk.sendTextMessage(
         msg.sessionWebhook,
-        `⏳ 任务仍在处理中，已等待 ${minutes} 分钟... ${minutes >= 15 ? "复杂任务可能需要更长时间，请耐心等待" : ""}`
+        `⏳ 正在处理中，请稍候...`
       );
     } catch {
       // webhook may expire after long idle; ignore heartbeat errors
     }
-  }, 300_000);
+  }, 60_000);
 
   let currentSessionId: string | undefined;
   let retries = 0;
@@ -138,25 +135,6 @@ export async function processAIMessage(
 
     try {
       currentSessionId = sessions.get(sessionKey);
-
-      // Rotate session if message limit reached
-      if (currentSessionId && config.maxMessagesPerSession > 0) {
-        const count = messagesPerSession.get(sessionKey) ?? 0;
-        if (count >= config.maxMessagesPerSession) {
-          log.warn("session message limit reached, rotating session", {
-            sessionId: currentSessionId.slice(0, 8),
-            count,
-            max: config.maxMessagesPerSession,
-          });
-          sessions.delete(sessionKey);
-          currentSessionId = undefined;
-          messagesPerSession.set(sessionKey, 0);
-          await dingtalk.sendTextMessage(
-            msg.sessionWebhook,
-            `⏳ 会话消息数已达上限（${count} 条），已自动切换新会话继续处理...`
-          ).catch(() => {});
-        }
-      }
 
       // 验证 session 是否仍有效（opencode serve 重启后旧 ID 会失效）
       if (currentSessionId) {
@@ -189,9 +167,6 @@ export async function processAIMessage(
       const response = await opencode.sendMessage(currentSessionId, message, abortController.signal);
       watchdog.stop();
       clearInterval(heartbeat);
-
-      const prevCount = messagesPerSession.get(sessionKey) ?? 0;
-      messagesPerSession.set(sessionKey, prevCount + 1);
 
       const { summary, changedFiles, toolNames, fullLength } = opencode.extractSummary(response);
       const shareUrl = await opencode.shareSession(sessionId);
@@ -233,7 +208,6 @@ export async function processAIMessage(
           const newSession = await opencode.createSession(`钉钉-${msg.senderNick}-${Date.now()}`);
           currentSessionId = newSession.id;
           sessions.set(sessionKey, currentSessionId);
-          messagesPerSession.set(sessionKey, 0);
           await dingtalk.sendTextMessage(
             msg.sessionWebhook,
             `⏳ OpenCode 连接中断，已切换新会话重试（第 ${retries} 次）...`
@@ -261,7 +235,6 @@ export async function processAIMessage(
           const newSession = await opencode.createSession(`钉钉-${msg.senderNick}`);
           currentSessionId = newSession.id;
           sessions.set(sessionKey, currentSessionId);
-          messagesPerSession.set(sessionKey, 0);
 
           await dingtalk.sendTextMessage(
             msg.sessionWebhook,
@@ -278,42 +251,32 @@ export async function processAIMessage(
       }
 
       const isTimeout = err instanceof Error && err.name === "AbortError";
-      if (isTimeout) {
-        const prev = timeoutsPerSession.get(sessionKey) ?? 0;
-        timeoutsPerSession.set(sessionKey, prev + 1);
-        if (prev + 1 >= 2 && retries < maxRetries) {
-          retries++;
-          shouldRetry = true;
-          timeoutsPerSession.set(sessionKey, 0);
-          sessions.delete(sessionKey);
+      if (isTimeout && retries < maxRetries) {
+        retries++;
+        shouldRetry = true;
 
-          log.warn("context overload detected, starting new session", {
-            attempt: retries,
-            oldSessionId: currentSessionId?.slice(0, 8),
-            sessionKey,
-          });
+        log.warn("abort error, retrying", {
+          attempt: retries,
+          sessionKey,
+        });
 
-          try {
-            const newSession = await opencode.createSession(`钉钉-${msg.senderNick}`);
-            currentSessionId = newSession.id;
-            sessions.set(sessionKey, currentSessionId);
-            messagesPerSession.set(sessionKey, 0);
+        try {
+          const newSession = await opencode.createSession(`钉钉-${msg.senderNick}`);
+          currentSessionId = newSession.id;
+          sessions.set(sessionKey, currentSessionId);
 
-            await dingtalk.sendTextMessage(
-              msg.sessionWebhook,
-              `⏳ 上下文已满，已切换新会话继续处理（第 ${retries} 次重试）...`
-            ).catch(() => {});
-          } catch (retryErr) {
-            log.error("retry session creation failed", { error: String(retryErr) });
-            shouldRetry = false;
-            clearInterval(heartbeat);
-            await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false);
-          }
-
-          continue;
+          await dingtalk.sendTextMessage(
+            msg.sessionWebhook,
+            `⏳ 任务超时，正在重新处理（第 ${retries} 次重试）...`
+          ).catch(() => {});
+        } catch (retryErr) {
+          log.error("retry session creation failed", { error: String(retryErr) });
+          shouldRetry = false;
+          clearInterval(heartbeat);
+          await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false);
         }
-      } else {
-        timeoutsPerSession.set(sessionKey, 0);
+
+        continue;
       }
 
       clearInterval(heartbeat);

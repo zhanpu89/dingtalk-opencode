@@ -1,0 +1,20 @@
+[
+  {
+    "id": "bot",
+    "name": "钉钉中间件",
+    "path": "/root/project/dingtalk-opencode",
+    "description": "钉钉机器人到 OpenCode 的桥接服务"
+  },
+  {
+    "id": "qt",
+    "name": "量化交易",
+    "path": "/root/project/auction-trading-system",
+    "description": "量化交易系统"
+  },
+  {
+    "id": "wl",
+    "name": "工作台",
+    "path": "/root/project/work-ledger",
+    "description": "系统开发工作台"
+  }
+]

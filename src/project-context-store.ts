@@ -6,8 +6,6 @@ const log = new Logger("ProjectContextStore");
 
 export class ProjectContextStore {
   private map = new Map<string, string>();
-  private dirty = false;
-  private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private filePath = path.resolve("data", "project-context.json")) {
     this.load();
@@ -31,19 +29,26 @@ export class ProjectContextStore {
     }
   }
 
-  private scheduleSave(): void {
-    this.dirty = true;
-    if (this.saveTimer) return;
-    this.saveTimer = setTimeout(() => this.flush(), 2000);
+  get(key: string): string | undefined {
+    return this.map.get(key);
   }
 
-  flush(): void {
-    if (!this.dirty) return;
-    this.dirty = false;
-    if (this.saveTimer) {
-      clearTimeout(this.saveTimer);
-      this.saveTimer = null;
-    }
+  set(key: string, projectId: string): void {
+    this.map.set(key, projectId);
+    this.writeFile();
+  }
+
+  delete(key: string): void {
+    this.map.delete(key);
+    this.writeFile();
+  }
+
+  clearAll(): void {
+    this.map.clear();
+    this.writeFile();
+  }
+
+  private writeFile(): void {
     try {
       const obj: Record<string, string> = {};
       for (const [k, v] of this.map) {
@@ -51,29 +56,7 @@ export class ProjectContextStore {
       }
       fs.writeFileSync(this.filePath, JSON.stringify(obj, null, 2), "utf-8");
     } catch (err) {
-      log.error("failed to save project context store", { error: String(err) });
+      log.error("failed to write project context", { error: String(err) });
     }
-  }
-
-  get(key: string): string | undefined {
-    return this.map.get(key);
-  }
-
-  set(key: string, projectId: string): void {
-    this.map.set(key, projectId);
-    this.scheduleSave();
-    this.flush();
-  }
-
-  delete(key: string): void {
-    this.map.delete(key);
-    this.scheduleSave();
-    this.flush();
-  }
-
-  clearAll(): void {
-    this.map.clear();
-    this.dirty = true;
-    this.flush();
   }
 }

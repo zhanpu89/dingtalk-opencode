@@ -14,9 +14,11 @@ export class MessageQueue {
     const tracked = next.catch(() => {});
     this.chains.set(sessionKey, tracked);
     tracked.finally(() => {
-      if (this.chains.get(sessionKey) === tracked) {
-        this.chains.delete(sessionKey);
-      }
+      setTimeout(() => {
+        if (this.chains.get(sessionKey) === tracked) {
+          this.chains.delete(sessionKey);
+        }
+      }, 1000);
     }).catch(() => {});
     return next;
   }

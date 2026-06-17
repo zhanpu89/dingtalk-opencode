@@ -15,7 +15,6 @@ export interface AppConfig {
   projectServerHostname: string;
   projectServerIdleMs: number;
   projectSwitchRequired: boolean;
-  maxMessagesPerSession: number;
 }
 
 function envStr(key: string, fallback = ""): string {
@@ -62,6 +61,5 @@ export function loadConfig(): AppConfig {
     projectServerHostname: envStr("PROJECT_SERVER_HOSTNAME", "127.0.0.1"),
     projectServerIdleMs: envInt("PROJECT_SERVER_IDLE_MS", 7_200_000),
     projectSwitchRequired: envBool("PROJECT_SWITCH_REQUIRED", false),
-    maxMessagesPerSession: envInt("MAX_MESSAGES_PER_SESSION", 0),
   };
 }

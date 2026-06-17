@@ -63,6 +63,13 @@ export class ProjectRegistry {
         throw new Error(`project path is not a directory: ${project.path}`);
       }
 
+      // SVR-REG-08: 检查项目目录是否包含标志文件
+      const markerFiles = [".git", "opencode.json", "AGENTS.md", "package.json", "pyproject.toml", "go.mod"];
+      const hasMarker = markerFiles.some((f) => fs.existsSync(path.join(project.path, f)));
+      if (!hasMarker) {
+        log.warn("project directory has no recognized marker files", { path: project.path, markers: markerFiles });
+      }
+
       const realProjectPath = realpathSync(project.path);
       if (roots.length > 0 && !roots.some((root) => this.isInsideRoot(realProjectPath, root))) {
         throw new Error(`project path is outside allowed roots: ${project.path}`);

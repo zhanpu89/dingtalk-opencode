@@ -35,19 +35,36 @@ const defaultOpencode = new OpenCodeClient(config);
 const dingtalk = new DingTalkClient(config.dingtalkBotName);
 const sessions = new SessionStore(`${config.dataDir}/session-map.json`);
 const projectContexts = new ProjectContextStore(`${config.dataDir}/project-context.json`);
-projectContexts.clearAll();
 const projectRegistry = new ProjectRegistry(config.projectsConfigPath, config.allowedProjectRoots);
 const serverManager = new ServerManager(config);
 const queue = new MessageQueue();
-const streamCheckIntervalMs = 60_000;
 
-// Per-session state
-const timeoutsPerSession = new Map<string, number>();
-const messagesPerSession = new Map<string, number>();
-const streamUnhealthyThresholdMs = 180_000;
 let shuttingDown = false;
-let lastStreamHealthyAt = Date.now();
-let streamSupervisor: ReturnType<typeof setInterval> | undefined;
+
+// ── 全局限流器 (MSG-REG-11) ──
+class RateLimiter {
+  private tokens: number;
+  private lastRefill: number;
+
+  constructor(private maxTokens: number, private windowMs: number) {
+    this.tokens = maxTokens;
+    this.lastRefill = Date.now();
+  }
+
+  tryConsume(): boolean {
+    const now = Date.now();
+    const elapsed = now - this.lastRefill;
+    // Refill tokens based on elapsed time
+    this.tokens = Math.min(this.maxTokens, this.tokens + (elapsed / this.windowMs) * this.maxTokens);
+    this.lastRefill = now;
+
+    if (this.tokens < 1) return false;
+    this.tokens -= 1;
+    return true;
+  }
+}
+
+const rateLimiter = new RateLimiter(config.rateLimitMax, config.rateLimitWindowMs);
 
 // Shared context for AI processing (injected rather than passed through call chain)
 const aiContext: AIMessageContext = {
@@ -55,8 +72,6 @@ const aiContext: AIMessageContext = {
   dingtalk,
   config,
   sessions,
-  messagesPerSession,
-  timeoutsPerSession,
 };
 
 export function getSessionKey(msg: RobotTextMessage, projectId = "default"): string {
@@ -107,15 +122,6 @@ async function buildProjectListMessage(): Promise<string> {
   return rows.join("\n");
 }
 
-async function ensureProjectClient(project: ProjectConfig): Promise<OpenCodeClient> {
-  if (isDefaultServerProject(project)) return defaultOpencode;
-
-  const baseUrl = await serverManager.startProject(project);
-  return baseUrl !== defaultOpencode["baseUrl"]
-    ? new OpenCodeClient(config, baseUrl)
-    : defaultOpencode;
-}
-
 // ── Project commands ──
 
 async function handleProjectCommand(message: string, msg: RobotTextMessage): Promise<boolean> {
@@ -123,7 +129,7 @@ async function handleProjectCommand(message: string, msg: RobotTextMessage): Pro
   const contextKey = getContextKey(msg);
 
   if (["项目列表", "获取所有项目"].includes(text)) {
-    await dingtalk.sendMessage(msg.sessionWebhook, await buildProjectListMessage());
+    await dingtalk.sendMessage(msg.sessionWebhook, { title: "项目列表", text: await buildProjectListMessage() });
     return true;
   }
 
@@ -264,13 +270,26 @@ export async function handleRobotMessage(raw: string): Promise<void> {
     return;
   }
 
+  // MSG-REG-11: 全局限流
+  if (!rateLimiter.tryConsume()) {
+    await dingtalk.sendTextMessage(msg.sessionWebhook, "系统繁忙，请稍后再试");
+    return;
+  }
+
   const sessionKey = getSessionKey(msg, project?.id ?? "default");
   const queued = queue.isBusy(sessionKey);
 
   // Resolve the opencode client for the active project
   if (project) {
     try {
-      aiContext.opencode = await ensureProjectClient(project);
+      if (isDefaultServerProject(project)) {
+        aiContext.opencode = defaultOpencode;
+      } else {
+        const baseUrl = await serverManager.startProject(project);
+        aiContext.opencode = baseUrl !== defaultOpencode["baseUrl"]
+          ? new OpenCodeClient(config, baseUrl)
+          : defaultOpencode;
+      }
     } catch (err) {
       projectContexts.delete(contextKey);
       await dingtalk.sendTextMessage(
@@ -316,53 +335,12 @@ const client = new DWClient({
 });
 
 client.registerCallbackListener(TOPIC_ROBOT, (downstream: DWClientDownStream) => {
-  lastStreamHealthyAt = Date.now();
   client.socketCallBackResponse(downstream.headers.messageId, { status: "SUCCESS" });
   handleRobotMessage(downstream.data);
 });
 
-function isStreamHealthy(): boolean {
-  return client.connected === true;
-}
-
-async function reconnectDingTalkStream(reason: string): Promise<void> {
-  if (shuttingDown || client.reconnecting) return;
-  log.warn("reconnecting DingTalk Stream", { reason });
-  try {
-    await client.connect();
-    lastStreamHealthyAt = Date.now();
-  } catch (err) {
-    log.error("DingTalk Stream reconnect failed", { error: String(err) });
-  }
-}
-
-export function startStreamSupervisor(): ReturnType<typeof setInterval> {
-  return setInterval(() => {
-    if (shuttingDown) return;
-
-    if (isStreamHealthy()) {
-      lastStreamHealthyAt = Date.now();
-      return;
-    }
-
-    const unhealthyMs = Date.now() - lastStreamHealthyAt;
-    log.warn("DingTalk Stream unhealthy", {
-      connected: client.connected,
-      registered: client.registered,
-      reconnecting: client.reconnecting,
-      unhealthyMs,
-    });
-
-    if (unhealthyMs >= streamUnhealthyThresholdMs) {
-      void reconnectDingTalkStream("supervisor detected unhealthy stream");
-    }
-  }, streamCheckIntervalMs);
-}
-
 try {
   await client.connect();
-  lastStreamHealthyAt = Date.now();
-  streamSupervisor = startStreamSupervisor();
   await serverManager.start();
   log.info("DingTalk Stream client started successfully");
 } catch (err) {
@@ -373,11 +351,9 @@ try {
 function shutdown(signal: string): void {
   shuttingDown = true;
   log.info(`received ${signal}, shutting down...`);
-  if (streamSupervisor) clearInterval(streamSupervisor);
   serverManager.stop();
   client.disconnect();
   sessions.flush();
-  projectContexts.flush();
   log.info("goodbye");
   process.exit(0);
 }
