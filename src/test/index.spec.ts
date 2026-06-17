@@ -85,6 +85,15 @@ vi.mock('../watchdog.js', () => ({
     this.state = 'running';
   }),
 }));
+vi.mock('../server-manager.js', () => ({
+  ServerManager: vi.fn(function MockServerManager(this: any) {
+    this.isDefaultHealthy = true;
+    this.start = vi.fn().mockResolvedValue(undefined);
+    this.stop = vi.fn();
+    this.startProject = vi.fn().mockResolvedValue('http://127.0.0.1:4100');
+    this.checkProject = vi.fn().mockResolvedValue({ running: false });
+  }),
+}));
 
 const { buildReplyMessage, sendProcessingError, handleRobotMessage, getSessionKey, stripBotMention, startStreamSupervisor } = await import('../index.js');
 

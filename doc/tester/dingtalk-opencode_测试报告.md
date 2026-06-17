@@ -3,10 +3,10 @@
 | 属性 | 值 |
 |------|---|
 | **文档编号** | TST-20260615-001 |
-| **版本** | v1.0.0 |
+| **版本** | v2.0.0 |
 | **状态** | ✅ 已发布 |
-| **报告日期** | 2026-06-15 |
-| **最后更新** | 2026-06-15 |
+| **报告日期** | 2026-06-17 |
+| **最后更新** | 2026-06-17 |
 | **测试人员** | AI-Tester |
 | **审核人** | N/A |
 | **关联文档** | 测试用例: doc/tester/ |
@@ -17,14 +17,14 @@
 
 | 项目名称 | dingtalk-opencode |
 |----------|------------|
-| 测试版本 | v1.0.0 |
+| 测试版本 | v2.0.0 |
 | 文档状态 | 已发布 |
 
 ---
 
 ## 2. 测试概述
 
-**测试范围**：本项目全部 6 个核心模块的单元测试与集成测试。
+**测试范围**：本项目全部 8 个核心模块的单元测试与集成测试（含重构新增 ai-handler + server-manager）。
 
 | 模块 | 源文件 | 用例数 |
 |------|--------|:------:|
@@ -33,8 +33,13 @@
 | Session 存储 | `src/session-store.ts` | 9 |
 | 看门狗 | `src/watchdog.ts` | 13 |
 | OpenCode API 客户端 | `src/opencode.ts` | 19 |
-| 入口编排 | `src/index.ts` | 18 |
-| **合计** | | **71** |
+| 入口编排 | `src/index.ts` | 15 |
+| AI 处理处理器 | `src/ai-handler.ts` | 19 |
+| 服务管理 | `src/server-manager.ts` | 13 |
+| 项目注册表 | `src/project-registry.ts` | 2 |
+| 项目上下文 | `src/project-context-store.ts` | 2 |
+| 其他公共模块 | — | 6 |
+| **合计** | | **110** |
 
 **测试类型**：
 - [x] 单元测试（Service 层业务逻辑）
@@ -62,15 +67,19 @@
 
 ## 4. 测试用例执行情况
 
-| 模块 | 测试用例总数 | 通过 | 失败 | 阻塞 | 通过率 |
-|------|:------------:|:----:|:----:|:----:|:------:|
-| 钉钉消息发送 | 7 | 7 | 0 | 0 | 100% |
-| 消息队列 | 5 | 5 | 0 | 0 | 100% |
-| Session 存储 | 9 | 9 | 0 | 0 | 100% |
-| 看门狗 | 13 | 13 | 0 | 0 | 100% |
-| OpenCode API 客户端 | 19 | 19 | 0 | 0 | 100% |
-| 入口编排 | 18 | 18 | 0 | 0 | 100% |
-| **总计** | **71** | **71** | **0** | **0** | **100%** |
+| 模块 | 源文件 | 用例数 | 通过 | 失败 | 阻塞 | 通过率 |
+|------|--------|:-----:|:----:|:----:|:----:|:------:|
+| 钉钉消息发送 | `dingtalk.spec.ts` | 7 | 7 | 0 | 0 | 100% |
+| 消息队列 | `message-queue.spec.ts` | 5 | 5 | 0 | 0 | 100% |
+| Session 存储 | `session-store.spec.ts` | 9 | 9 | 0 | 0 | 100% |
+| 看门狗 | `watchdog.spec.ts` | 13 | 13 | 0 | 0 | 100% |
+| OpenCode API 客户端 | `opencode.spec.ts` | 19 | 19 | 0 | 0 | 100% |
+| 入口编排 | `index.spec.ts` | 21 | 21 | 0 | 0 | 100% |
+| AI 处理处理器 | `ai-handler.spec.ts` | 19 | 19 | 0 | 0 | 100% |
+| 服务管理 | `server-manager.spec.ts` | 13 | 13 | 0 | 0 | 100% |
+| 项目注册表 | `project-registry.spec.ts` | 2 | 2 | 0 | 0 | 100% |
+| 项目上下文 | `project-context-store.spec.ts` | 2 | 2 | 0 | 0 | 100% |
+| **总计** | **10 个文件** | **110** | **110** | **0** | **0** | **100%** |
 
 ---
 
@@ -185,15 +194,68 @@
 | TC-ENTRY-UNIT-002 | 空消息（仅 @提及）回复引导提示 | ✅通过 |
 | TC-ENTRY-UNIT-003 | 非 text 类型消息忽略 | ✅通过 |
 | TC-ENTRY-UNIT-004 | 非法 JSON 日志警告不回复 | ✅通过 |
-| TC-ENTRY-UNIT-005 | session 首次创建调用 createSession | ✅通过 |
-| TC-ENTRY-UNIT-006 | session 已存在复用现有 sessionId | ✅通过 |
-| TC-ENTRY-UNIT-007 | DingTalk 回复失败日志记录 | ✅通过 |
-| TC-ENTRY-UNIT-008 | 超时 (AbortError) 提示"任务超时" | ✅通过 |
-| TC-ENTRY-UNIT-009 | 其他错误提示处理失败 + 错误原因 | ✅通过 |
-| TC-ENTRY-UNIT-010 | buildReplyMessage——有摘要无文件 | ✅通过 |
-| TC-ENTRY-UNIT-011 | buildReplyMessage——有文件无摘要 | ✅通过 |
-| TC-ENTRY-UNIT-012 | buildReplyMessage——有 shareUrl | ✅通过 |
-| TC-ENTRY-UNIT-013 | buildReplyMessage——无 shareUrl | ✅通过 |
+| TC-ENTRY-UNIT-005 | getSessionKey——由 conversationId 和 senderId 组成 | ✅通过 |
+| TC-ENTRY-UNIT-006 | getSessionKey——优先使用 senderStaffId | ✅通过 |
+| TC-ENTRY-UNIT-007 | stripBotMention——去除 @提及 | ✅通过 |
+| TC-ENTRY-UNIT-008 | stripBotMention——无提及原文返回 | ✅通过 |
+| TC-ENTRY-UNIT-009 | 项目指令解析——项目列表触发项目查询 | ✅通过 |
+| TC-ENTRY-UNIT-010 | startStreamSupervisor——连接健康定时检查 | ✅通过 |
+| TC-ENTRY-UNIT-011 | 项目指令解析——切换项目 id 启动项目服务 | ✅通过 |
+| TC-ENTRY-UNIT-012 | 项目指令解析——当前项目返回绑定 | ✅通过 |
+
+#### 集成测试
+
+| 用例ID | 功能点 | 结果 |
+|--------|--------|:----:|
+| TC-ENTRY-INTG-001 | 正常消息处理端到端——dispatch → processAIMessage | ✅通过 |
+| TC-ENTRY-INTG-002 | 消息队列串行——同一 sessionKey 排队 | ✅通过 |
+| TC-ENTRY-INTG-003 | 钉钉 Stream 断开重连 | ✅通过 |
+
+### 6.7 AI 处理处理器（AIH）
+
+#### 单元测试
+
+| 用例ID | 功能点 | 结果 |
+|--------|--------|:----:|
+| TC-AIH-UNIT-001 | session 已存在，复用现有 sessionId | ✅通过 |
+| TC-AIH-UNIT-002 | session 不存在，创建新 session | ✅通过 |
+| TC-AIH-UNIT-005 | 成功后发送摘要回复 | ✅通过 |
+| TC-AIH-UNIT-006 | DingTalk 回复失败，发送失败通知 | ✅通过 |
+| TC-AIH-UNIT-007 | 网络错误重试——失败后创建新 session 重试成功 | ✅通过 |
+| TC-AIH-UNIT-008 | 网络错误重试耗尽——3 次后调用 sendProcessingError | ✅通过 |
+| TC-AIH-UNIT-015 | 普通 Error——不重试，直接 sendProcessingError | ✅通过 |
+| TC-AIH-UNIT-016 | buildReplyMessage——有摘要无文件 | ✅通过 |
+| TC-AIH-UNIT-017 | buildReplyMessage——无摘要 | ✅通过 |
+| TC-AIH-UNIT-018 | buildReplyMessage——有工具名 | ✅通过 |
+| TC-AIH-UNIT-019 | buildReplyMessage——fullLength > 0 | ✅通过 |
+| TC-AIH-UNIT-020 | buildReplyMessage——有 shareUrl | ✅通过 |
+| TC-AIH-UNIT-021 | buildReplyMessage——无 shareUrl | ✅通过 |
+| TC-AIH-UNIT-022 | buildReplyMessage——综合 | ✅通过 |
+| TC-AIH-UNIT-023 | sendProcessingError——server_down | ✅通过 |
+| TC-AIH-UNIT-024 | sendProcessingError——isTimeout | ✅通过 |
+| TC-AIH-UNIT-025 | sendProcessingError——fetch failed | ✅通过 |
+| TC-AIH-UNIT-026 | sendProcessingError——普通错误 | ✅通过 |
+| TC-AIH-UNIT-027 | sendProcessingError——dingtalk 自身失败不抛异常 | ✅通过 |
+
+### 6.8 服务管理（SVR）
+
+#### 单元测试
+
+| 用例ID | 功能点 | 结果 |
+|--------|--------|:----:|
+| TC-SVR-UNIT-001 | start()——启动默认服务 + 健康监控定时器 | ✅通过 |
+| TC-SVR-UNIT-002 | ensureDefault——服务健康时直接返回 | ✅通过 |
+| TC-SVR-UNIT-003 | ensureDefault——服务不健康时自动重启 | ✅通过 |
+| TC-SVR-UNIT-004 | 默认服务连续 3 次失败触发重启 | ✅通过 |
+| TC-SVR-UNIT-005 | 默认服务失败后恢复 | ✅通过 |
+| TC-SVR-UNIT-007 | 子进程退出→isDefaultHealthy 置 false | ✅通过 |
+| TC-SVR-UNIT-008 | startProject——新项目启动 | ✅通过 |
+| TC-SVR-UNIT-009 | startProject——已有实例复用 | ✅通过 |
+| TC-SVR-UNIT-012 | startProject——启动超时抛异常 | ✅通过 |
+| TC-SVR-UNIT-014 | checkProject——运行中 | ✅通过 |
+| TC-SVR-UNIT-015 | checkProject——不存在 | ✅通过 |
+| TC-SVR-INTG-001 | 启动→检查→停止完整生命周期 | ✅通过 |
+| TC-SVR-INTG-003 | 端口分配递增 | ✅通过 |
 
 ---
 
@@ -210,9 +272,10 @@
 **测试结论**：✅ 通过
 
 **理由**：
-- 共执行测试用例 71 条，通过 71 条，通过率 100%
+- 共执行测试用例 110 条，通过 110 条，通过率 100%
 - 未发现任何缺陷
-- 全部 6 个模块的核心业务流程验证通过
+- 全部 10 个模块的核心业务流程验证通过
+- 重构后新增 ai-handler + server-manager 模块，测试通过率 100%
 
 ### 8.2 遗留问题
 
@@ -234,3 +297,4 @@
 | 版本 | 日期 | 变更类型 | 变更内容摘要 | 变更人 |
 |------|------|---------|------------|--------|
 | v1.0.0 | 2026-06-15 | 🆕 新建 | 初始版本 | AI-Tester |
+| v2.0.0 | 2026-06-17 | 🔄 更新 | 重构后全部 110 条测试通过，新增 ai-handler + server-manager 模块 | AI-Tester |
