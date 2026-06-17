@@ -158,6 +158,18 @@ export async function processAIMessage(
         }
       }
 
+      // 验证 session 是否仍有效（opencode serve 重启后旧 ID 会失效）
+      if (currentSessionId) {
+        const exists = await opencode.sessionExists(currentSessionId);
+        if (exists === false) {
+          log.warn("stale session detected, creating new one", {
+            oldSessionId: currentSessionId.slice(0, 8),
+          });
+          sessions.delete(sessionKey);
+          currentSessionId = undefined;
+        }
+      }
+
       if (!currentSessionId) {
         log.info("creating opencode session", { sessionKey });
         const session = await opencode.createSession(`钉钉-${msg.senderNick}`);
