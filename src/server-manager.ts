@@ -15,6 +15,10 @@ interface ProjectServerState {
   startedAt: number;
   lastUsedAt: number;
   status: "starting" | "running" | "failed" | "stopped";
+  /** 标记是否为主动停止（非意外退出），主动停止不触发自动重启 */
+  intentionalStop?: boolean;
+  /** 意外退出自动重启次数（防止崩溃循环） */
+  restartCount?: number;
 }
 
 export interface ServerInstance {
@@ -205,7 +209,7 @@ export class ServerManager {
   disposeProject(projectId: string): void {
     const instance = this.projectServers.get(projectId);
     if (instance) {
-      this.killProject(instance);
+      this.killProject(instance);  // killProject 内部会设 intentionalStop = true
       this.projectServers.delete(projectId);
     }
   }
@@ -256,14 +260,41 @@ export class ServerManager {
       status: "starting",
     };
     child.on("exit", (code, signal) => {
-      log.warn("project server exited", {
+      const uptimeMs = Date.now() - instance.startedAt;
+      instance.pid = undefined;
+      instance.status = "stopped";
+
+      if (instance.intentionalStop) {
+        log.info("project server stopped intentionally", { projectId: project.id, uptimeMs });
+        return;
+      }
+
+      // ── 意外退出 → 自动重启（最多 3 次，防止崩溃循环） ──
+      log.error("project server exited UNEXPECTEDLY, will restart", {
         projectId: project.id,
-        pid: child.pid,
         code,
         signal,
-        uptimeMs: Date.now() - instance.startedAt,
+        uptimeMs,
+        restartCount: instance.restartCount,
       });
-      instance.status = "stopped";
+      instance.restartCount = (instance.restartCount ?? 0) + 1;
+
+      if (instance.restartCount > 3) {
+        log.error("project server exceeded max restarts, giving up", { projectId: project.id });
+        return;
+      }
+
+      // 延迟 2s 后自动重启（等端口释放）
+      setTimeout(() => {
+        // 检查是否已被主动清理（如 stopAllProjects）
+        if (this.projectServers.get(project.id) !== instance) return;
+        log.info("auto-restarting project server", { projectId: project.id, attempt: instance.restartCount });
+        this.bootProject(project).then(() => {
+          log.info("project server auto-restarted successfully", { projectId: project.id });
+        }).catch((err) => {
+          log.error("project server auto-restart failed", { projectId: project.id, error: String(err) });
+        });
+      }, 2000);
     });
     this.projectServers.set(project.id, instance);
 
@@ -288,6 +319,7 @@ export class ServerManager {
   }
 
   private killProject(instance: ProjectServerState): void {
+    instance.intentionalStop = true;
     try {
       if (instance.pid) process.kill(instance.pid, "SIGTERM");
     } catch {
