@@ -23,7 +23,6 @@ export class Watchdog {
   constructor(
     private opencode: OpenCodeClient,
     private sessionId: string,
-    private abortController: AbortController,
     private options: WatchdogOptions = defaultOptions,
   ) {}
 
@@ -47,7 +46,7 @@ export class Watchdog {
 
   private async checkHealth(): Promise<void> {
     try {
-      const healthy = await this.opencode.health();
+      const healthy = await this.opencode.quickHealth();
       if (healthy) {
         this.consecutiveHealthFailures = 0;
       } else {
@@ -57,9 +56,8 @@ export class Watchdog {
           max: this.options.maxHealthFailures,
         });
         if (this.consecutiveHealthFailures >= this.options.maxHealthFailures) {
-          log.error("OpenCode server is down, aborting stream");
+          log.error("OpenCode server is down (detected by watchdog)");
           this._state = "server_down";
-          this.abortController.abort();
         }
       }
     } catch (err) {
@@ -69,9 +67,8 @@ export class Watchdog {
         error: String(err),
       });
       if (this.consecutiveHealthFailures >= this.options.maxHealthFailures) {
-        log.error("OpenCode server unreachable, aborting stream");
+        log.error("OpenCode server unreachable (detected by watchdog)");
         this._state = "server_down";
-        this.abortController.abort();
       }
     }
   }
@@ -80,13 +77,11 @@ export class Watchdog {
     try {
       const exists = await this.opencode.sessionExists(this.sessionId);
       if (exists === false) {
-        log.warn("session vanished from server, scheduling restart", {
+        log.warn("session vanished from server", {
           sessionId: this.sessionId.slice(0, 8),
         });
         this._state = "restart";
-        this.abortController.abort();
       }
-      // exists === null means API error — skip this cycle (no false restart)
     } catch {
       // ignore
     }

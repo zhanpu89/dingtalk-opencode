@@ -304,4 +304,19 @@ export class OpenCodeClient {
       return false;
     }
   }
+
+  /** Quick health check with short timeout (5s) for watchdog use */
+  async quickHealth(): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5_000);
+      const res = await fetch(`${this.baseUrl}/global/health`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
 }

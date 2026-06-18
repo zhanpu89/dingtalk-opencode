@@ -119,6 +119,7 @@ npm run docker:run
 | `使用项目 <编号或名称>` | 同上 |
 | `当前项目` | 查看当前会话绑定的项目 |
 | `重置项目` | 清除当前会话的项目绑定 |
+| `强制重启` / `暴力重启` | 停止所有服务并重启机器人 |
 
 切换项目后，普通消息会发送到该项目目录下启动的 `opencode serve`。如项目服务未启动，机器人会自动在项目目录中启动并等待健康检查通过。
 
@@ -145,7 +146,7 @@ src/
 ├── project-registry.ts        # 多项目配置加载与查询
 ├── project-context-store.ts   # 钉钉会话 ↔ 当前项目映射
 ├── server-manager.ts          # 动态项目 opencode 服务管理
-├── watchdog.ts                # 服务健康检查与 session 存活检测
+├── watchdog.ts                # 服务健康检查与 session 存活检测（仅监控不中断消息）
 ├── types.ts                   # TypeScript 类型定义
 ├── logger.ts                  # 日志工具
 └── test/                      # 测试

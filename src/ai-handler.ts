@@ -130,7 +130,6 @@ export async function processAIMessage(
       await new Promise((r) => setTimeout(r, delay));
     }
 
-    const abortController = new AbortController();
     let watchdog: Watchdog | undefined;
 
     try {
@@ -161,10 +160,12 @@ export async function processAIMessage(
         message: message.slice(0, 60),
       });
 
-      watchdog = new Watchdog(opencode, currentSessionId, abortController);
+      // Watchdog monitors health but does NOT share the AbortController with sendMessage.
+      // Previously they shared one, causing watchdog health-check failures to abort in-flight messages.
+      watchdog = new Watchdog(opencode, currentSessionId);
       watchdog.start();
 
-      const response = await opencode.sendMessage(currentSessionId, message, abortController.signal);
+      const response = await opencode.sendMessage(currentSessionId, message);
       watchdog.stop();
       clearInterval(heartbeat);
 

@@ -1,6 +1,6 @@
 import "dotenv/config";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import { DWClient, TOPIC_ROBOT } from "dingtalk-stream";
 import type { RobotTextMessage, DWClientDownStream } from "dingtalk-stream";
 import { loadConfig } from "./config.js";
@@ -189,6 +189,26 @@ async function handleProjectCommand(message: string, msg: RobotTextMessage): Pro
   if (text === "重置项目") {
     projectContexts.delete(contextKey);
     await dingtalk.sendTextMessage(msg.sessionWebhook, "已重置项目，后续将使用默认 OpenCode 服务");
+    return true;
+  }
+
+  if (["强制重启", "暴力重启"].includes(text)) {
+    await dingtalk.sendTextMessage(msg.sessionWebhook, "正在强制重启机器人服务...");
+    serverManager.stopAllProjects();
+    sessions.flush();
+    const scriptPath = path.join(process.cwd(), "scripts", "restart_bot.sh");
+    if (!require("node:fs").existsSync(scriptPath)) {
+      await dingtalk.sendTextMessage(msg.sessionWebhook, `重启脚本不存在（${scriptPath}），请手动执行：npm run start:all`);
+      return true;
+    }
+    const child = spawn("bash", [scriptPath], {
+      cwd: process.cwd(),
+      stdio: "ignore",
+      detached: true,
+    });
+    child.unref();
+    await dingtalk.sendTextMessage(msg.sessionWebhook, "✅ 机器人服务正在重启，请稍候...");
+    setTimeout(() => process.exit(0), 2000);
     return true;
   }
 

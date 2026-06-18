@@ -2,10 +2,10 @@
 
 ---
 文档编号：TC-20260617-004
-版本：v1.0.0
+版本：v1.1.0
 状态：🟡 草稿
 创建日期：2026-06-17
-最后更新：2026-06-17
+最后更新：2026-06-18
 作者：AI-Tester
 关联文档：
   - 详设文档：doc/detailed/消息调度与AI处理.md
@@ -16,7 +16,7 @@
 
 - **被测模块**：消息调度与AI处理（handleRobotMessage + processAIMessage + MessageQueue + Watchdog + dingtalk + buildReplyMessage + sendProcessingError + rateLimiter）
 - **被测接口**：8 个（handleRobotMessage/processAIMessage/buildReplyMessage/sendProcessingError/MessageQueue.enqueue/Watchdog.start/stop/dingtalk.sendMessage/sendTextMessage/rateLimiter.tryConsume）
-- **用例总数**：36 条（单元测试 26 + 集成测试 10 + 安全测试 0 + 性能测试 0）
+- **用例总数**：42 条（单元测试 30 + 集成测试 12 + 安全测试 0 + 性能测试 0）
 - **关联业务规则**：MSG-REG-01 ~ MSG-REG-11
 - **关联代码评审报告**：无
 - **AC 追溯**：
@@ -58,8 +58,12 @@
 | TC-MSG-UNIT-011 | 重试条件：连续 2 次 AbortError | P1 | MSG-REG-05 | 连续 2 次 AbortError | 1. 执行 processAIMessage 2. 连续 2 次 AbortError | 触发重试，删除旧 session | |
 | TC-MSG-UNIT-012 | 最大重试 3 次 | P0 | MSG-REG-06 | 持续失败 | 1. 执行 processAIMessage 2. 连续失败 3 次 | 第 3 次后停止重试，发送错误提示 | |
 | TC-MSG-UNIT-013 | 指数退避间隔 1s -> 2s -> 4s | P1 | MSG-REG-06 | 重试 3 次 | 1. 执行 processAIMessage 2. 检查重试间隔 | 第 1 次 1s，第 2 次 2s，第 3 次 4s | |
-| TC-MSG-UNIT-014 | 看门狗连续 3 次 health 失败触发 server_down | P0 | MSG-REG-07 | 连续 3 次 health 返回 false | 1. watchdog.start() 2. 3 次 tick health 均失败 | state = "server_down"，abort 被调用 | |
-| TC-MSG-UNIT-015 | 看门狗 session 消失触发 restart | P0 | MSG-REG-08 | sessionExists 返回 false | 1. watchdog.start() 2. tick 检测到 session 不存在 | state = "restart"，abort 被调用 | |
+| TC-MSG-UNIT-014 | 看门狗连续 3 次 health 失败触发 server_down | P0 | MSG-REG-07 | 连续 3 次 health 返回 false | 1. watchdog.start() 2. 3 次 tick health 均失败 | state = "server_down"，不调用 abort（仅记录状态）| v1.1.0 变更：不再 abort |
+| TC-MSG-UNIT-015 | 看门狗 session 消失触发 restart | P0 | MSG-REG-08 | sessionExists 返回 false | 1. watchdog.start() 2. tick 检测到 session 不存在 | state = "restart"，不调用 abort | v1.1.0 变更：不再 abort |
+| TC-MSG-UNIT-027 | 看门狗使用 quickHealth 而非 health | P1 | MSG-REG-07 | 正常服务 | 1. watchdog.start() 2. 观察健康检查调用 | 调用 opencode.quickHealth()，5s 超时 | v1.1.0 新增 |
+| TC-MSG-UNIT-028 | 看门狗不持有 AbortController | P1 | — | 正常构造 | 1. new Watchdog(sessionId) | 构造函数无 signal 参数，不传出 AbortController | v1.1.0 新增 |
+| TC-MSG-UNIT-029 | sendMessage 内部超时不影响看门狗 | P1 | — | sendMessage 超时发出 AbortError | 1. sendMessage 超时 2. 检查 watchdog 状态 | watchdog 状态不受影响，仍为 running | v1.1.0 新增 |
+| TC-MSG-UNIT-030 | session 失效（opencode 重启后旧 ID 无效）| P1 | — | sessionExists 返回 false | 1. processAIMessage 2. sessionExists=false | 删除旧 sessionId，创建新 session | v1.1.0 新增 |
 | TC-MSG-UNIT-016 | 钉钉消息发送异常内部 catch | P1 | MSG-REG-09 | webhook 不可达 | 1. 调用 dingtalk.sendMessage | 日志 warn，不抛出异常 | |
 | TC-MSG-UNIT-017 | 非法 JSON 消息日志警告不回复 | P1 | MSG-REG-10 | 损坏的原始数据 | 1. 调用 handleRobotMessage(非法 JSON) | 日志 warn，不回复 | |
 | TC-MSG-UNIT-018 | 全局限流正常通过 | P1 | MSG-REG-11 | 每秒 30 个请求 | 1. 调用 rateLimiter.tryConsume() 30 次 | 全部返回 true | |
@@ -100,6 +104,8 @@
 |--------|---------|-------|---------|---------|----------|----------------|-----|
 | TC-MSG-INTG-009 | 同用户串行 -> 不同用户并行 | P0 | 2 个用户各发 2 条 | enqueue 4 次 | — | 同用户串行执行，不同用户并行执行 | |
 | TC-MSG-INTG-010 | 限流超限回复繁忙 | P1 | 每秒超过 50 个请求 | handleRobotMessage 并发 60 次 | — | 超出部分回复"系统繁忙，请稍后再试" | |
+| TC-MSG-INTG-011 | session 失效后自动重建 | P1 | sessionExists 返回 false | processAIMessage → session 验证失败 | — | 删除旧 sessionId，重新创建新 session，继续处理 | v1.1.0 新增 |
+| TC-MSG-INTG-012 | 看门狗 server_down 不中断消息 | P1 | 连续 3 次 health 失败 | processAIMessage 执行中 watchdog 触发 server_down | — | 消息继续处理（不产生 AbortError），完成后如超时则走超时逻辑 | v1.1.0 新增 |
 
 ---
 
@@ -125,12 +131,12 @@
 
 | 类型 | 数量 | 优先级分布 |
 |-----|-----|---------|
-| 单元测试（UNIT） | 26 | P0: 8 / P1: 14 / P2: 4 |
-| 集成测试（INTG） | 10 | P0: 4 / P1: 6 / P2: 0 |
+| 单元测试（UNIT） | 30 | P0: 8 / P1: 18 / P2: 4 |
+| 集成测试（INTG） | 12 | P0: 5 / P1: 7 / P2: 0 |
 | 安全测试（SEC） | 0 | P0: 0 / P1: 0 / P2: 0 |
 | 性能测试（PERF） | 0 | P0: 0 / P1: 0 / P2: 0 |
 | 前端测试（FE） | 0 | P0: 0 / P1: 0 / P2: 0 |
-| **合计** | **36** | P0: 12 / P1: 20 / P2: 4 |
+| **合计** | **42** | P0: 13 / P1: 25 / P2: 4 |
 
 其中 `[评审专项]` 用例：3 条（REVIEW-DES-005, REVIEW-DES-006, REVIEW-DES-007）
 
@@ -141,3 +147,4 @@
 | 版本 | 日期 | 作者 | 变更说明 |
 |-----|------|-----|---------|
 | v1.0.0 | 2026-06-17 | AI-Tester | 初始版本，首次生成 |
+| v1.1.0 | 2026-06-18 | AI-Tester | 更新 watchdog 测试：不再 abort、新增 quickHealth 测试、session 失效验证；新增集成测试 TC-MSG-INTG-011/012 |
