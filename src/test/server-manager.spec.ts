@@ -152,4 +152,54 @@ describe("ServerManager", () => {
     expect(result.running).toBe(true);
     expect(result.port).toBe(4100);
   });
+
+  it("TC-SVR-UNIT-014 | 端口分配全部被占用", async () => {
+    vi.spyOn(manager as any, "isPortFree").mockResolvedValue(false);
+    vi.spyOn(manager as any, "allocatePort").mockRejectedValue(new Error("no free port available"));
+    await expect(
+      manager.startProject({ id: "proj1", name: "Test", path: "/tmp" })
+    ).rejects.toThrow("no free port available");
+  });
+
+  it("TC-SVR-INTG-002 | 启动超时后状态为 stopped", async () => {
+    const instance = {
+      projectId: "proj1",
+      projectPath: "/tmp",
+      port: 4100,
+      baseUrl: "http://127.0.0.1:4100",
+      status: "starting",
+      startedAt: Date.now(),
+      lastUsedAt: Date.now(),
+    };
+    (manager as any).projectServers.set("proj1", instance);
+    vi.spyOn(manager as any, "bootProject").mockRejectedValue(new Error("project server startup timeout: http://127.0.0.1:4100"));
+    vi.spyOn(manager as any, "killProject").mockImplementation((inst: any) => {
+      inst.status = "stopped";
+    });
+
+    await expect(manager.startProject({ id: "proj1", name: "Test", path: "/tmp" })).rejects.toThrow("timeout");
+
+    // 实例应从 map 中清除（因 startProject 失败时 pendingStarts 会清理，但 projectServers 中因 bootProject 调用 killProject 会更新状态）
+    // 验证 killProject 被调用
+    expect((manager as any).killProject).toHaveBeenCalled();
+  });
+
+  it("TC-SVR-UNIT-020 | stopAllProjects 清除所有项目实例", async () => {
+    const instance = {
+      projectId: "proj1",
+      projectPath: "/tmp",
+      port: 4100,
+      baseUrl: "http://127.0.0.1:4100",
+      status: "running",
+      startedAt: Date.now(),
+      lastUsedAt: Date.now(),
+    };
+    (manager as any).projectServers.set("proj1", instance);
+    (manager as any).projectServers.set("proj2", { ...instance, projectId: "proj2", port: 4101 });
+    vi.spyOn(manager as any, "killProject").mockImplementation((inst: any) => {
+      inst.status = "stopped";
+    });
+    manager.stopAllProjects();
+    expect((manager as any).projectServers.size).toBe(0);
+  });
 });

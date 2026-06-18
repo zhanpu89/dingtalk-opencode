@@ -12,13 +12,16 @@ vi.mock("../logger.js", () => ({
 
 describe("Watchdog", () => {
   let abortController: AbortController;
-  let mockOpencode: { health: ReturnType<typeof vi.fn>; sessionExists: ReturnType<typeof vi.fn> };
+  let mockOpencode: {
+    quickHealth: ReturnType<typeof vi.fn>;
+    sessionExists: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
     vi.useFakeTimers();
     abortController = new AbortController();
     mockOpencode = {
-      health: vi.fn(),
+      quickHealth: vi.fn(),
       sessionExists: vi.fn(),
     };
   });
@@ -28,11 +31,13 @@ describe("Watchdog", () => {
   });
 
   it("TC-MSG-UNIT-014 | 连续 3 次 health 失败触发 server_down", async () => {
-    mockOpencode.health.mockResolvedValue(false);
-    const watchdog = new Watchdog(mockOpencode as any, "sid", abortController, {
+    mockOpencode.quickHealth.mockResolvedValue(false);
+    mockOpencode.sessionExists.mockResolvedValue(true); // 不影响 health 检测
+    const watchdog = new Watchdog(mockOpencode as any, "sid", {
       checkIntervalMs: 1000,
       maxHealthFailures: 3,
     });
+    watchdog.setCriticalAbort(abortController);
     watchdog.start();
     for (let i = 0; i < 3; i++) {
       await vi.advanceTimersByTimeAsync(1000);
@@ -43,12 +48,13 @@ describe("Watchdog", () => {
   });
 
   it("TC-MSG-UNIT-015 | session 消失触发 restart", async () => {
-    mockOpencode.health.mockResolvedValue(true);
+    mockOpencode.quickHealth.mockResolvedValue(true);
     mockOpencode.sessionExists.mockResolvedValue(false);
-    const watchdog = new Watchdog(mockOpencode as any, "sid", abortController, {
+    const watchdog = new Watchdog(mockOpencode as any, "sid", {
       checkIntervalMs: 1000,
       maxHealthFailures: 3,
     });
+    watchdog.setCriticalAbort(abortController);
     watchdog.start();
     await vi.advanceTimersByTimeAsync(1000);
     expect(watchdog.state).toBe("restart");
@@ -57,9 +63,9 @@ describe("Watchdog", () => {
   });
 
   it("health 正常时保持 running", async () => {
-    mockOpencode.health.mockResolvedValue(true);
+    mockOpencode.quickHealth.mockResolvedValue(true);
     mockOpencode.sessionExists.mockResolvedValue(true);
-    const watchdog = new Watchdog(mockOpencode as any, "sid", abortController, {
+    const watchdog = new Watchdog(mockOpencode as any, "sid", {
       checkIntervalMs: 1000,
       maxHealthFailures: 3,
     });
@@ -70,8 +76,9 @@ describe("Watchdog", () => {
   });
 
   it("stop 后停止检查", async () => {
-    mockOpencode.health.mockResolvedValue(false);
-    const watchdog = new Watchdog(mockOpencode as any, "sid", abortController, {
+    mockOpencode.quickHealth.mockResolvedValue(false);
+    mockOpencode.sessionExists.mockResolvedValue(true);
+    const watchdog = new Watchdog(mockOpencode as any, "sid", {
       checkIntervalMs: 1000,
       maxHealthFailures: 3,
     });
