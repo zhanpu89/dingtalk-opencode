@@ -179,6 +179,7 @@ export class ServerManager {
     for (const instance of this.projectServers.values()) {
       this.killProject(instance);
     }
+    this.projectServers.clear();
   }
 
   // ── Server lifecycle ──
@@ -196,9 +197,18 @@ export class ServerManager {
     log.info("starting project server", { projectId: project.id, port });
     const child = spawn("opencode", ["serve", "--port", String(port), "--hostname", this.config.projectServerHostname], {
       cwd: project.path,
-      stdio: "ignore",
-      env: { ...process.env },
+      stdio: ["pipe", "ignore", "ignore"],
+      env: {
+        ...process.env,
+        // 防止 git pull 等命令因缺少 credential 而挂起等待输入
+        GIT_TERMINAL_PROMPT: "0",
+        // 抑制交互式授权弹窗（如 debconf / 首次启动向导）
+        DEBIAN_FRONTEND: "noninteractive",
+        CI: "true",
+      },
     });
+    // 立即关闭 stdin，防止子进程因交互式输入（权限确认/git 密码等）挂起
+    child.stdin?.end();
 
     const instance: ProjectServerState = {
       projectId: project.id,

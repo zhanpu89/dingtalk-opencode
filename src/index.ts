@@ -1,4 +1,5 @@
 import "dotenv/config";
+import fs from "node:fs";
 import path from "node:path";
 import { execSync, spawn } from "node:child_process";
 import { DWClient, TOPIC_ROBOT } from "dingtalk-stream";
@@ -193,22 +194,41 @@ async function handleProjectCommand(message: string, msg: RobotTextMessage): Pro
   }
 
   if (["强制重启", "暴力重启"].includes(text)) {
-    await dingtalk.sendTextMessage(msg.sessionWebhook, "正在强制重启机器人服务...");
-    serverManager.stopAllProjects();
-    sessions.flush();
-    const scriptPath = path.join(process.cwd(), "scripts", "restart_bot.sh");
-    if (!require("node:fs").existsSync(scriptPath)) {
-      await dingtalk.sendTextMessage(msg.sessionWebhook, `重启脚本不存在（${scriptPath}），请手动执行：npm run start:all`);
-      return true;
+    try {
+      await dingtalk.sendTextMessage(msg.sessionWebhook, "正在强制重启机器人服务...");
+      serverManager.stopAllProjects();
+      sessions.flush();
+
+      // 写标记文件：新实例启动后将通过此文件推送重启成功通知
+      const notifyFile = path.join(config.dataDir, ".restart-notify");
+      try {
+        fs.mkdirSync(path.dirname(notifyFile), { recursive: true });
+        fs.writeFileSync(notifyFile, msg.sessionWebhook, "utf-8");
+      } catch { /* 通知非关键，失败不影响重启 */ }
+
+      const scriptPath = path.join(process.cwd(), "scripts", "restart_bot.sh");
+      if (!fs.existsSync(scriptPath)) {
+        await dingtalk.sendTextMessage(msg.sessionWebhook, `重启脚本不存在（${scriptPath}），请手动执行：npm run start:all`);
+        return true;
+      }
+      const child = spawn("bash", [scriptPath], {
+        cwd: process.cwd(),
+        stdio: "ignore",
+        detached: true,
+      });
+      child.unref();
+
+      log.info("restart script spawned, sending confirmation", { pid: child.pid });
+      await dingtalk.sendTextMessage(msg.sessionWebhook, "✅ 机器人服务正在重启，请稍候...");
+      log.info("restart confirmation sent, exiting in 2s");
+      setTimeout(() => process.exit(0), 2000);
+    } catch (err) {
+      log.error("force restart failed", { error: String(err) });
+      await dingtalk.sendTextMessage(
+        msg.sessionWebhook,
+        `❌ 重启失败：${err instanceof Error ? err.message : String(err)}`
+      ).catch(() => {});
     }
-    const child = spawn("bash", [scriptPath], {
-      cwd: process.cwd(),
-      stdio: "ignore",
-      detached: true,
-    });
-    child.unref();
-    await dingtalk.sendTextMessage(msg.sessionWebhook, "✅ 机器人服务正在重启，请稍候...");
-    setTimeout(() => process.exit(0), 2000);
     return true;
   }
 
@@ -318,12 +338,16 @@ export async function handleRobotMessage(raw: string): Promise<void> {
       );
       return;
     }
-  } else if (!serverManager.isDefaultHealthy) {
-    await dingtalk.sendTextMessage(
-      msg.sessionWebhook,
-      `❌ **OpenCode 服务暂不可用**\n\n后台正在尝试自动恢复，请稍后重试。`
-    );
-    return;
+  } else {
+    // 没有选择项目 → 确保使用默认服务，避免前一次项目切换污染 aiContext
+    aiContext.opencode = defaultOpencode;
+    if (!serverManager.isDefaultHealthy) {
+      await dingtalk.sendTextMessage(
+        msg.sessionWebhook,
+        `❌ **OpenCode 服务暂不可用**\n\n后台正在尝试自动恢复，请稍后重试。`
+      );
+      return;
+    }
   }
 
   await dingtalk.sendTextMessage(
@@ -363,6 +387,33 @@ try {
   await client.connect();
   await serverManager.start();
   log.info("DingTalk Stream client started successfully");
+
+  // ── 重启成功通知 ──
+  // 检查是否有重启标记文件（暴力重启写入），若有则推送通知并清理
+  const notifyFile = path.join(config.dataDir, ".restart-notify");
+  if (fs.existsSync(notifyFile)) {
+    const webhook = fs.readFileSync(notifyFile, "utf-8").trim();
+    fs.unlinkSync(notifyFile);
+    if (webhook) {
+      log.info("sending restart success notification");
+      fetch(webhook, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          msgtype: "markdown",
+          markdown: {
+            title: "重启完成",
+            text: "✅ **机器人已重新启动**\n\n服务已成功重启，准备就绪！",
+          },
+        }),
+      }).then((res) => {
+        if (res.ok) log.info("restart notification sent");
+        else log.warn("restart notification failed", { status: res.status });
+      }).catch((err) => {
+        log.warn("restart notification send error", { error: String(err) });
+      });
+    }
+  }
 } catch (err) {
   log.error("failed to connect DingTalk Stream", { error: String(err) });
   process.exit(1);

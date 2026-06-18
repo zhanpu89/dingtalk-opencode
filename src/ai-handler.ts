@@ -160,12 +160,16 @@ export async function processAIMessage(
         message: message.slice(0, 60),
       });
 
-      // Watchdog monitors health but does NOT share the AbortController with sendMessage.
-      // Previously they shared one, causing watchdog health-check failures to abort in-flight messages.
+      // Watchdog monitors health independently (no shared AbortController for transient checks).
+      // A criticalAbort controller is set on the watchdog so that ONLY definitive state changes
+      // (session vanished → "restart" | 3 consecutive health failures → "server_down")
+      // will abort the in-flight sendMessage, allowing the retry loop to respond promptly.
+      const criticalAbort = new AbortController();
       watchdog = new Watchdog(opencode, currentSessionId);
+      watchdog.setCriticalAbort(criticalAbort);
       watchdog.start();
 
-      const response = await opencode.sendMessage(currentSessionId, message);
+      const response = await opencode.sendMessage(currentSessionId, message, criticalAbort.signal);
       watchdog.stop();
       clearInterval(heartbeat);
 

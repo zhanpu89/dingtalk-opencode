@@ -19,6 +19,7 @@ export class Watchdog {
   private _state: WatchdogState = "running";
   private timer: ReturnType<typeof setInterval> | null = null;
   private consecutiveHealthFailures = 0;
+  private criticalAbort: AbortController | null = null;
 
   constructor(
     private opencode: OpenCodeClient,
@@ -30,8 +31,18 @@ export class Watchdog {
     return this._state;
   }
 
+  /**
+   * 注入外部 AbortController，当看门狗确认服务不可用（server_down）或
+   * 会话已消失（restart）时主动中断正在进行的 sendMessage。
+   * 瞬态健康检查波动不会触发中断，仅状态确认变更后触发。
+   */
+  setCriticalAbort(ctrl: AbortController): void {
+    this.criticalAbort = ctrl;
+  }
+
   start(): void {
     this.timer = setInterval(() => {
+      // 并发执行，防止 checkSession 阻塞 checkHealth
       this.checkHealth();
       this.checkSession();
     }, this.options.checkIntervalMs);
@@ -41,6 +52,13 @@ export class Watchdog {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+  }
+
+  private triggerCriticalAbort(): void {
+    if (this.criticalAbort && !this.criticalAbort.signal.aborted) {
+      log.info("watchdog aborting in-flight message", { state: this._state });
+      this.criticalAbort.abort();
     }
   }
 
@@ -58,6 +76,7 @@ export class Watchdog {
         if (this.consecutiveHealthFailures >= this.options.maxHealthFailures) {
           log.error("OpenCode server is down (detected by watchdog)");
           this._state = "server_down";
+          this.triggerCriticalAbort();
         }
       }
     } catch (err) {
@@ -69,21 +88,29 @@ export class Watchdog {
       if (this.consecutiveHealthFailures >= this.options.maxHealthFailures) {
         log.error("OpenCode server unreachable (detected by watchdog)");
         this._state = "server_down";
+        this.triggerCriticalAbort();
       }
     }
   }
 
   private async checkSession(): Promise<void> {
     try {
-      const exists = await this.opencode.sessionExists(this.sessionId);
+      // 带超时的 session 检查：防止项目服务器无响应时阻塞看门狗（最长 10min）
+      const exists = await Promise.race([
+        this.opencode.sessionExists(this.sessionId),
+        new Promise<null>((_, reject) =>
+          setTimeout(() => reject(new Error("session check timeout")), 15_000),
+        ),
+      ]);
       if (exists === false) {
         log.warn("session vanished from server", {
           sessionId: this.sessionId.slice(0, 8),
         });
         this._state = "restart";
+        this.triggerCriticalAbort();
       }
     } catch {
-      // ignore
+      // 超时或 API 错误：静默忽略，不误报 restart，由 checkHealth 兜底
     }
   }
 }

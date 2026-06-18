@@ -1,8 +1,30 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "permission": {
-    "*": "allow",
-    "doom_loop": "allow",
-    "external_directory": "allow"
+  "instructions": [
+    ".opencode/rules/precise-location.md",
+    ".opencode/rules/endpoint-lock.md"
+  ],
+  "plugin": [
+    "./.opencode/plugins/skill-agent.ts"
+  ],
+  "agent": {
+    "prd-writer": { "description": "需求分析与 PRD 文档撰写", "mode": "subagent" },
+    "review-expert": { "description": "全流程评审专家，对文档进行结构化评审", "mode": "subagent" },
+    "system-architect": { "description": "系统架构设计，将 PRD 转化为架构建档", "mode": "subagent" },
+    "task-decomposer": { "description": "软件模块详细设计，将 SAD 拆解为模块级详设", "mode": "subagent" },
+    "code-developer": { "description": "编码实现，精确到位 + doc-sync 标记输出", "mode": "subagent" },
+    "code-reviewer": { "description": "代码质量门禁，评审代码并输出结构化报告", "mode": "subagent" },
+    "tester": { "description": "两阶段测试：测试用例设计 + 测试代码生成执行", "mode": "subagent" },
+    "dba-designer": { "description": "数据库设计，根据详设生成 DDL 脚本", "mode": "subagent" },
+    "ai-memory": { "description": "经验引擎：跨会话记忆持久化 + pipeline 各 phase 经验注入", "mode": "subagent" },
+    "self-evolve": {
+      "description": "半自动工具自我进化，分析历史调用日志后输出改进建议",
+      "mode": "subagent"
+    },
+    "pipeline-orchestrator": {
+      "description": "全流程软件工程编排器（主 agent 模式）",
+      "mode": "primary",
+      "prompt": "你是 Pipeline Orchestrator。读取 .opencode/skills/pipeline-orchestrator/SKILL.md 并执行。ai_memory_search_summaries 在每个 Phase 前注入历史经验，ai_memory_add_decision 记录关键决策。"
+    }
   }
 }
