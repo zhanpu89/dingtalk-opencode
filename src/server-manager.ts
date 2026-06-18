@@ -40,12 +40,46 @@ export class ServerManager {
   private pendingStarts = new Map<string, Promise<ProjectServerState>>();
   private nextPort: number;
 
+  // Idle reaper
+  private reaperTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor(private config: AppConfig) {
     const url = new URL(config.opencodeServerUrl);
     this.defaultBaseUrl = config.opencodeServerUrl;
     this.defaultPort = parseInt(url.port) || (url.protocol === "https:" ? 443 : 80);
     this.defaultHostname = url.hostname;
     this.nextPort = config.projectServerPortStart;
+    this.startIdleReaper();
+  }
+
+  /**
+   * 空闲回收器：定期扫描所有项目服务，超过 PROJECT_SERVER_IDLE_MS 未使用的自动释放
+   */
+  private startIdleReaper(): void {
+    const idleMs = this.config.projectServerIdleMs;
+    if (idleMs <= 0) return; // 0 或负数表示不回收
+    this.reaperTimer = setInterval(() => {
+      const now = Date.now();
+      for (const [projectId, instance] of this.projectServers) {
+        if (instance.status !== "running") continue;
+        const idle = now - instance.lastUsedAt;
+        if (idle >= idleMs) {
+          log.info("recycling idle project server", {
+            projectId,
+            idleMs: idle,
+            thresholdMs: idleMs,
+          });
+          this.disposeProject(projectId);
+        }
+      }
+    }, Math.min(idleMs, 60_000)); // 每分钟扫一次，但不大于阈值
+  }
+
+  private stopIdleReaper(): void {
+    if (this.reaperTimer) {
+      clearInterval(this.reaperTimer);
+      this.reaperTimer = null;
+    }
   }
 
   get isDefaultHealthy(): boolean {
@@ -69,6 +103,7 @@ export class ServerManager {
   }
 
   stop(): void {
+    this.stopIdleReaper();
     // Stop default server
     if (this.defaultProc && !this.defaultProc.killed) {
       this.defaultProc.kill("SIGTERM");
@@ -220,7 +255,14 @@ export class ServerManager {
       lastUsedAt: Date.now(),
       status: "starting",
     };
-    child.on("exit", () => {
+    child.on("exit", (code, signal) => {
+      log.warn("project server exited", {
+        projectId: project.id,
+        pid: child.pid,
+        code,
+        signal,
+        uptimeMs: Date.now() - instance.startedAt,
+      });
       instance.status = "stopped";
     });
     this.projectServers.set(project.id, instance);

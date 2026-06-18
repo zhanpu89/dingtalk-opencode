@@ -202,4 +202,31 @@ describe("ServerManager", () => {
     manager.stopAllProjects();
     expect((manager as any).projectServers.size).toBe(0);
   });
+
+  it("空闲回收器超过阈值后释放项目", async () => {
+    vi.useFakeTimers();
+    const oldNow = Date.now();
+    const idleMs = 7_200_000; // 2h
+    const mgr = new (ServerManager as any)(mockConfig({ projectServerIdleMs: idleMs })) as ServerManager;
+    // 手动注入一个很久未使用的实例
+    const oldTime = Date.now() - idleMs - 60_000; // 超过阈值
+    const instance = {
+      projectId: "proj1",
+      projectPath: "/tmp",
+      port: 4100,
+      baseUrl: "http://127.0.0.1:4100",
+      status: "running",
+      startedAt: oldTime,
+      lastUsedAt: oldTime,
+    };
+    (mgr as any).projectServers.set("proj1", instance);
+    vi.spyOn(mgr as any, "disposeProject").mockImplementation((id: string) => {
+      (mgr as any).projectServers.delete(id);
+    });
+    // 推进时间触发 reaper
+    await vi.advanceTimersByTimeAsync(idleMs + 10_000);
+    expect((mgr as any).projectServers.size).toBe(0);
+    expect((mgr as any).disposeProject).toHaveBeenCalledWith("proj1");
+    vi.useRealTimers();
+  });
 });
