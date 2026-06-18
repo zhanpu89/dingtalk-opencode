@@ -10,7 +10,7 @@ import { Logger } from "./logger.js";
 const log = new Logger("OpenCodeClient");
 
 export class OpenCodeClient {
-  private baseUrl: string;
+  readonly baseUrl: string;
   private authHeader: string | null;
   private timeoutMs: number;
 

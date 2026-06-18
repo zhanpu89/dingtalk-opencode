@@ -326,7 +326,7 @@ export async function handleRobotMessage(raw: string): Promise<void> {
         aiContext.opencode = defaultOpencode;
       } else {
         const baseUrl = await serverManager.startProject(project);
-        aiContext.opencode = baseUrl !== defaultOpencode["baseUrl"]
+        aiContext.opencode = baseUrl !== defaultOpencode.baseUrl
           ? new OpenCodeClient(config, baseUrl)
           : defaultOpencode;
       }
