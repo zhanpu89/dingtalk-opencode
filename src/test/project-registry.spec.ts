@@ -32,22 +32,38 @@ describe("ProjectRegistry", () => {
     expect(registry.list()).toHaveLength(1);
   });
 
-  it("TC-SVR-UNIT-002 | 重复 id 检测，load 后列表为空", () => {
+  it("TC-SVR-UNIT-002 | 重复 id 检测，跳过重复项保留第一个", () => {
     fs.writeFileSync(configPath, JSON.stringify([
       { id: "proj1", name: "Project1", path: tmpDir },
       { id: "proj1", name: "Project2", path: tmpDir },
     ]), "utf-8");
     const registry = new ProjectRegistry(configPath, [tmpDir]);
-    expect(registry.list()).toHaveLength(0);
+    expect(registry.list()).toHaveLength(1);
+    expect(registry.list()[0].name).toBe("Project1");
   });
 
-  it("TC-SVR-UNIT-003 | 重复 name 检测，load 后列表为空", () => {
+  it("TC-SVR-UNIT-003 | 重复 name 检测，跳过重复项保留第一个", () => {
     fs.writeFileSync(configPath, JSON.stringify([
       { id: "proj1", name: "SameName", path: tmpDir },
       { id: "proj2", name: "SameName", path: tmpDir },
     ]), "utf-8");
     const registry = new ProjectRegistry(configPath, [tmpDir]);
-    expect(registry.list()).toHaveLength(0);
+    expect(registry.list()).toHaveLength(1);
+    expect(registry.list()[0].id).toBe("proj1");
+  });
+
+  it("TC-SVR-UNIT-017 | 混合场景：部分有效 + 部分无效（目录不存在）", () => {
+    const nonExistentDir = path.join(tmpDir, "nonexistent");
+    fs.writeFileSync(configPath, JSON.stringify([
+      { id: "valid1", name: "Valid1", path: tmpDir },
+      { id: "invalid1", name: "Invalid1", path: nonExistentDir },
+      { id: "valid2", name: "Valid2", path: tmpDir },
+    ]), "utf-8");
+    const registry = new ProjectRegistry(configPath, [tmpDir]);
+    expect(registry.list()).toHaveLength(2);
+    expect(registry.find("valid1")).toBeDefined();
+    expect(registry.find("valid2")).toBeDefined();
+    expect(registry.find("invalid1")).toBeUndefined();
   });
 
   it("TC-SVR-UNIT-004 | 非绝对路径，load 后列表为空", () => {

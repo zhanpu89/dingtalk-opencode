@@ -67,20 +67,20 @@ class RateLimiter {
 
 const rateLimiter = new RateLimiter(config.rateLimitMax, config.rateLimitWindowMs);
 
-// Shared context for AI processing (injected rather than passed through call chain)
-const aiContext: AIMessageContext = {
-  opencode: defaultOpencode,
-  dingtalk,
-  config,
-  sessions,
-};
+/**
+ * 每个任务创建独立的 AIMessageContext，避免 aiContext.opencode 共享可变状态
+ * 导致的消息间污染（用户A切换项目后，用户B的请求可能拿到错误 client）。
+ */
+function buildTaskContext(opencodeClient: OpenCodeClient): AIMessageContext {
+  return { opencode: opencodeClient, dingtalk, config, sessions };
+}
 
 export function getSessionKey(msg: RobotTextMessage, projectId = "default"): string {
-  return `${projectId}:${msg.conversationId}:${msg.senderStaffId || msg.senderId}`;
+  return `${projectId}:${msg.conversationId}:${msg.senderId}`;
 }
 
 function getContextKey(msg: RobotTextMessage): string {
-  return `${msg.conversationId}:${msg.senderStaffId || msg.senderId}`;
+  return `${msg.conversationId}:${msg.senderId}`;
 }
 
 export function stripBotMention(text: string): string {
@@ -250,15 +250,19 @@ async function handleProjectCommand(message: string, msg: RobotTextMessage): Pro
       : `正在启动/切换项目：${project.name}（${project.id}）...`
   );
 
-  projectContexts.set(contextKey, project.id);
   try {
-    const baseUrl = await serverManager.startProject(project);
+    // 默认项目（路径等于 project root）复用已有 4096 服务，避免起新端口
+    const baseUrl = isDefaultServerProject(project)
+      ? defaultOpencode.baseUrl
+      : await serverManager.startProject(project);
+    // 只在服务启动成功后设置上下文，避免异步操作期间上下文被清除
+    projectContexts.set(contextKey, project.id);
     await dingtalk.sendTextMessage(
       msg.sessionWebhook,
       `${currentProjectId === project.id ? "当前已在项目" : "已切换到项目"}：${project.name}（${project.id}）\n路径：${project.path}\n服务：${baseUrl}`
     );
   } catch (err) {
-    projectContexts.delete(contextKey);
+    // 上下文从未设置过（失败路径不会 set），无需清理
     await dingtalk.sendTextMessage(msg.sessionWebhook, `项目启动失败：${err instanceof Error ? err.message : String(err)}`);
   }
   return true;
@@ -319,28 +323,27 @@ export async function handleRobotMessage(raw: string): Promise<void> {
   const sessionKey = getSessionKey(msg, project?.id ?? "default");
   const queued = queue.isBusy(sessionKey);
 
-  // Resolve the opencode client for the active project
+  // 为每个任务解析独立的 OpenCode client，不再修改共享的 aiContext 对象
+  let opencodeForTask: OpenCodeClient;
   if (project) {
     try {
       if (isDefaultServerProject(project)) {
-        aiContext.opencode = defaultOpencode;
+        opencodeForTask = defaultOpencode;
       } else {
         const baseUrl = await serverManager.startProject(project);
-        aiContext.opencode = baseUrl !== defaultOpencode.baseUrl
+        opencodeForTask = baseUrl !== defaultOpencode.baseUrl
           ? new OpenCodeClient(config, baseUrl)
           : defaultOpencode;
       }
     } catch (err) {
-      projectContexts.delete(contextKey);
+      // 只报错不移除上下文，避免 AI 任务失败影响用户已选的项目
       await dingtalk.sendTextMessage(
         msg.sessionWebhook,
-        `项目服务启动失败，已清除当前项目：${err instanceof Error ? err.message : String(err)}\n请发送"项目列表"确认状态后重新切换项目`
+        `项目服务启动失败：${err instanceof Error ? err.message : String(err)}\n请发送"项目列表"确认状态后重新切换项目`
       );
       return;
     }
   } else {
-    // 没有选择项目 → 确保使用默认服务，避免前一次项目切换污染 aiContext
-    aiContext.opencode = defaultOpencode;
     if (!serverManager.isDefaultHealthy) {
       await dingtalk.sendTextMessage(
         msg.sessionWebhook,
@@ -348,6 +351,7 @@ export async function handleRobotMessage(raw: string): Promise<void> {
       );
       return;
     }
+    opencodeForTask = defaultOpencode;
   }
 
   await dingtalk.sendTextMessage(
@@ -357,7 +361,9 @@ export async function handleRobotMessage(raw: string): Promise<void> {
       : `⏳ 已收到消息，正在用 OpenCode AI 处理中...\n\n> ${message.slice(0, 100)}${message.length > 100 ? "..." : ""}\n\n请稍候，处理完成后会通知您。`
   );
 
-  queue.enqueue(sessionKey, () => processAIMessage(aiContext, sessionKey, message, msg));
+  // 每个任务使用独立的 context，避免 opencode client 被后续消息覆盖
+  const taskContext = buildTaskContext(opencodeForTask);
+  queue.enqueue(sessionKey, () => processAIMessage(taskContext, sessionKey, message, msg));
 }
 
 // ── Bootstrap ──

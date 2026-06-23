@@ -44,23 +44,34 @@ export class ProjectRegistry {
     const ids = new Set<string>();
     const names = new Set<string>();
     const result: ProjectConfig[] = [];
-    const roots = this.allowedRoots.map((root) => realpathSync(root));
+    let roots: string[];
+    try {
+      roots = this.allowedRoots.map((root) => realpathSync(root));
+    } catch {
+      log.warn("failed to resolve allowed roots, skipping root check", { roots: this.allowedRoots });
+      roots = [];
+    }
 
     for (const project of projects) {
       if (!project.id || !project.name || !project.path) {
-        throw new Error("project id, name and path are required");
+        log.warn("skipping project: missing required fields (id/name/path)", { project });
+        continue;
       }
       if (ids.has(project.id)) {
-        throw new Error(`duplicate project id: ${project.id}`);
+        log.warn("skipping project: duplicate id", { id: project.id });
+        continue;
       }
       if (names.has(project.name)) {
-        throw new Error(`duplicate project name: ${project.name}`);
+        log.warn("skipping project: duplicate name", { name: project.name });
+        continue;
       }
       if (!path.isAbsolute(project.path)) {
-        throw new Error(`project path must be absolute: ${project.path}`);
+        log.warn("skipping project: path must be absolute", { id: project.id, path: project.path });
+        continue;
       }
       if (!fs.existsSync(project.path) || !fs.statSync(project.path).isDirectory()) {
-        throw new Error(`project path is not a directory: ${project.path}`);
+        log.warn("skipping project: path is not a directory", { id: project.id, path: project.path });
+        continue;
       }
 
       // SVR-REG-08: 检查项目目录是否包含标志文件
@@ -72,7 +83,8 @@ export class ProjectRegistry {
 
       const realProjectPath = realpathSync(project.path);
       if (roots.length > 0 && !roots.some((root) => this.isInsideRoot(realProjectPath, root))) {
-        throw new Error(`project path is outside allowed roots: ${project.path}`);
+        log.warn("skipping project: path is outside allowed roots", { id: project.id, path: project.path });
+        continue;
       }
 
       ids.add(project.id);

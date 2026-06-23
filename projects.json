@@ -16,5 +16,11 @@
     "name": "work-ledger",
     "path": "/root/project/work-ledger",
     "description": "系统开发工作台"
+  },
+  {
+    "id": "ats",
+    "name": "auction-trading-system",
+    "path": "/root/project/auction-trading-system",
+    "description": "量化交易系统"
   }
 ]

@@ -38,8 +38,8 @@ sleep 2
 
 cd /root/project/dingtalk-opencode || exit 1
 
-# 清理可能损坏的会话数据
-rm -f data/session-map.json data/project-context.json
+# 清理可能损坏的会话数据（保留项目上下文，避免切换偏好丢失）
+rm -f data/session-map.json
 
 # 确保日志目录存在
 mkdir -p data

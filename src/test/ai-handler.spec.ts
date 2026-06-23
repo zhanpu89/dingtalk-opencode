@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { buildReplyMessage, sendProcessingError, processAIMessage } from "../ai-handler.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { buildReplyMessage, sendProcessingError, processAIMessage, ProbeConfig } from "../ai-handler.js";
 import { Watchdog } from "../watchdog.js";
 import { MessageQueue } from "../message-queue.js";
 
@@ -11,6 +11,17 @@ vi.mock("../logger.js", () => ({
     debug = vi.fn();
   },
 }));
+
+// 加速探测延迟，让 retry 测试在合理时间内完成
+beforeEach(() => {
+  ProbeConfig.baseDelayMs = 1;
+  ProbeConfig.maxDelayMs = 100;
+});
+
+afterEach(() => {
+  ProbeConfig.baseDelayMs = 5000;
+  ProbeConfig.maxDelayMs = 20000;
+});
 
 describe("buildReplyMessage", () => {
   it("TC-MSG-UNIT-020 | 处理成功时返回完整回复", () => {
