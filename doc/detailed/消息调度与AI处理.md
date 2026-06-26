@@ -1,10 +1,10 @@
 # dingtalk-opencode — 消息调度与AI处理 详细设计文档
 
 **文档编号**：DES-20260617-004
-**版本**：v1.1.0
+**版本**：v1.2.0
 **状态**：🟡 草稿
 **创建日期**：2026-06-17
-**最后更新**：2026-06-18
+**最后更新**：2026-06-26
 **作者**：AI 生成
 **审核人**：待定
 **所属层次**：Layer 3（对外接口层）+ Layer 2（业务逻辑层）+ Layer 4（集成层）
@@ -22,6 +22,7 @@
 - 功能6：**钉钉消息发送** — Markdown 和纯文本消息 Webhook 发送，异常内部吞掉不传播
 - 功能7：**错误提示** — 按错误类型（超时/服务不可用/处理失败）发送不同提示文本
 - 功能8：**强制重启指令** — 用户发送"强制重启"时停止所有服务、持久化会话、触发后台重启脚本后退出
+- 功能9：**会话轮次上限与实例回收** — 每轮消息计数，达到 `MAX_ROUNDS_PER_SESSION` 后杀死旧 opencode serve 进程重启新实例，AI 上下文完全清零
 
 ---
 
@@ -40,6 +41,7 @@
 | MSG-REG-09 | 钉钉消息发送异常内部 catch 日志 warn，不向上传播 | 硬编码 |
 | MSG-REG-10 | 非法 JSON 消息日志警告，不回复 | 硬编码 |
 | MSG-REG-11 | 全局限流：每秒最多处理 50 个请求，超出时回复"系统繁忙，请稍后再试" | 硬编码（可配置） |
+| MSG-REG-12 | 会话轮次上限：每轮消息 `roundCount++`，达到 `MAX_ROUNDS_PER_SESSION` 后回收项目进程并重建 Session；默认项目仅重建 Session 不回收端口 | 环境变量_MAX_ROUNDS_PER_SESSION（默认 0=不限制） |
 
 ---
 
@@ -235,7 +237,35 @@ async def processAIMessage(ctx, session_key, message, msg, request_id):
         try:
             log = ctx.logger.with_fields(request_id=request_id)  # TraceId 贯穿日志
 
-            # 步骤2a: 获取或创建 session
+            # v1.2.0: 步骤2a: 轮次上限检查
+            # 每轮消息计数，达到 MAX_ROUNDS_PER_SESSION 后回收项目进程
+            if config.maxRoundsPerSession > 0:
+                round_count = sessionStore.getRoundCount(session_key)
+                if round_count >= config.maxRoundsPerSession:
+                    project_id = session_key.split(":")[0]
+                    log.info("round limit reached, recycling",
+                             rounds=round_count, max=config.maxRoundsPerSession)
+
+                    # 通知用户
+                    dingtalk.sendTextMessage(
+                        ctx.webhook,
+                        f"🔄 已达 {config.maxRoundsPerSession} 轮对话上限，正在回收实例重新启动..."
+                    )
+
+                    if project_id != "default" and ctx.recycleProjectSession:
+                        # 项目服务：杀死旧进程，重启新实例（所有 session 清零）
+                        await ctx.recycleProjectSession(project_id)
+                        sessionStore.delete(session_key)
+                        sessionStore.resetRound(session_key)
+                    else:
+                        # 默认项目：不回收端口，只重建 Session
+                        sessionStore.delete(session_key)
+                        sessionStore.resetRound(session_key)
+
+                # 轮次 +1（无论是否超限，每轮消息计数一次）
+                sessionStore.incrementRound(session_key)
+
+            # 步骤2b: 获取或创建 session
             # 首先验证已有 session 是否有效（opencode serve 重启后旧 ID 会失效）
             session_id = sessionStore.get(session_key)
             if session_id:
@@ -249,16 +279,16 @@ async def processAIMessage(ctx, session_key, message, msg, request_id):
                 session_id = await opencode.createSession(session_name)
                 sessionStore.set(session_key, session_id)
 
-            # 步骤2b: 启动看门狗（仅监控，不持有 AbortController）
+            # 步骤2c: 启动看门狗（仅监控，不持有 AbortController）
             # v1.1.0: Watchdog 不再与 sendMessage 共享 AbortController
             watchdog = Watchdog(session_id)
             watchdog.start()
 
-            # 步骤2c: 发送消息并等待 AI 回复
+            # 步骤2d: 发送消息并等待 AI 回复
             # TIMEOUT: 由 sendMessage 内部 1800s 超时控制，不再由 watchdog 控制
             result = await opencode.sendMessage(session_id, message)
 
-            # 步骤2d: 处理成功 → 构建并发送回复
+            # 步骤2e: 处理成功 → 构建并发送回复
             watchdog.stop()
             clearInterval(heartbeat)
             reply = buildReplyMessage(result, request_id)
@@ -579,3 +609,4 @@ class TaskState(enum):
 | v1.0.1 | 2026-06-17 | ✏️ 修改 | 同步架构评审：补充全局限流 MSG-REG-11、handleRobotMessage 新增限流步骤 | AI 生成 |
 | v1.0.2 | 2026-06-17 | ✏️ 修改 | 同步详设评审：dingtalk §3 接口定义、错误枚举、TraceId、MessageQueue 清理、任务状态机 | AI 生成 |
 | v1.1.0 | 2026-06-18 | ✏️ 修改 | Watchdog 与 sendMessage 解耦：移除共享 AbortController，watchdog 改用 quickHealth()（5s 超时），仅监控不中断消息；processAIMessage 新增 session 失效验证；新增强制重启指令 | AI 生成 |
+| v1.2.0 | 2026-06-26 | ✨ 新增 | 会话轮次上限与实例回收：processAIMessage 入口检查 roundCount，超限回收项目端口重建实例；新增 MSG-REG-12 | AI 生成 |
