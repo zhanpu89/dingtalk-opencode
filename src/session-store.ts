@@ -6,11 +6,13 @@ const log = new Logger("SessionStore");
 
 export class SessionStore {
   private map: Map<string, string>;
+  private roundMap: Map<string, number>;
   private filePath: string;
   private saveTimer: ReturnType<typeof setTimeout> | null;
 
   constructor(filePath?: string) {
     this.map = new Map();
+    this.roundMap = new Map();
     this.filePath = filePath || path.resolve("data", "session-map.json");
     this.saveTimer = null;
     this.load();
@@ -88,5 +90,26 @@ export class SessionStore {
 
   size(): number {
     return this.map.size;
+  }
+
+  // ── Round count tracking (in-memory only, not persisted) ──
+
+  getRoundCount(key: string): number {
+    return this.roundMap.get(key) ?? 0;
+  }
+
+  incrementRound(key: string): number {
+    const count = (this.roundMap.get(key) ?? 0) + 1;
+    this.roundMap.set(key, count);
+    return count;
+  }
+
+  resetRound(key: string): void {
+    this.roundMap.set(key, 0);
+  }
+
+  /** Clear all round counters (e.g., after server recycle) */
+  clearAllRounds(): void {
+    this.roundMap.clear();
   }
 }

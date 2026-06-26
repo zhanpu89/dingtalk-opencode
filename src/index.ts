@@ -68,11 +68,22 @@ class RateLimiter {
 const rateLimiter = new RateLimiter(config.rateLimitMax, config.rateLimitWindowMs);
 
 /**
+ * 回收项目服务：查找项目配置，杀死旧进程，重启新实例。
+ */
+async function recycleProjectSession(projectId: string): Promise<string> {
+  const project = projectRegistry.find(projectId);
+  if (!project) {
+    throw new Error(`项目 ${projectId} 未找到，无法回收实例`);
+  }
+  return serverManager.recycleProject(project);
+}
+
+/**
  * 每个任务创建独立的 AIMessageContext，避免 aiContext.opencode 共享可变状态
  * 导致的消息间污染（用户A切换项目后，用户B的请求可能拿到错误 client）。
  */
 function buildTaskContext(opencodeClient: OpenCodeClient): AIMessageContext {
-  return { opencode: opencodeClient, dingtalk, config, sessions };
+  return { opencode: opencodeClient, dingtalk, config, sessions, recycleProjectSession };
 }
 
 export function getSessionKey(msg: RobotTextMessage, projectId = "default"): string {
@@ -152,6 +163,45 @@ async function handleProjectCommand(message: string, msg: RobotTextMessage): Pro
       msg.sessionWebhook,
       `当前项目：${project.name}（${project.id}）\n${project.path}\n状态：${status}`
     );
+    return true;
+  }
+
+  // ── 报告进度：仅检查项目服务健康，不转发 AI，避免打断长任务 ──
+  const reportMatch = text.match(/^报告进度(?:\s+(.+))?$/);
+  if (reportMatch) {
+    let targetProject: ProjectConfig | undefined;
+    const identifier = reportMatch[1]?.trim();
+
+    if (identifier) {
+      // "报告进度 ats" → 指定项目
+      targetProject = projectRegistry.find(identifier);
+      if (!targetProject) {
+        await dingtalk.sendTextMessage(msg.sessionWebhook, `未找到项目：${identifier}\n请发送"项目列表"查看可用项目`);
+        return true;
+      }
+    } else {
+      // "报告进度" → 使用当前项目
+      const projectId = projectContexts.get(contextKey);
+      targetProject = projectId ? projectRegistry.find(projectId) : undefined;
+      if (!targetProject) {
+        await dingtalk.sendTextMessage(msg.sessionWebhook, "当前未选择项目，请先切换项目或使用「报告进度 <项目编号>」");
+        return true;
+      }
+    }
+
+    const { running, port } = await serverManager.checkProject(targetProject.id);
+    if (running) {
+      await dingtalk.sendTextMessage(
+        msg.sessionWebhook,
+        `⏳ ${targetProject.name}（${targetProject.id}）正在处理中，请稍候...\n服务端口：${port}`
+      );
+    } else {
+      // server 不在 projectServers 管理列表中，无法确认
+      await dingtalk.sendTextMessage(
+        msg.sessionWebhook,
+        `⚠️ 无法确认 ${targetProject.name}（${targetProject.id}）的服务状态。\n请先发送「切换项目 ${targetProject.id}」让 Bot 接管服务后再使用本指令。`
+      );
+    }
     return true;
   }
 

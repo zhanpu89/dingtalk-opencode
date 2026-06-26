@@ -214,6 +214,22 @@ export class ServerManager {
     }
   }
 
+  /**
+   * 回收项目服务端口：杀死旧进程，重启新实例。
+   * 返回新实例的 baseUrl。
+   */
+  async recycleProject(project: ProjectConfig): Promise<string> {
+    log.info("recycling project server", { projectId: project.id, path: project.path });
+    const existing = this.projectServers.get(project.id);
+    if (existing) {
+      this.killProject(existing);
+      this.projectServers.delete(project.id);
+      // 等待端口释放
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return this.startProject(project);
+  }
+
   stopAllProjects(): void {
     for (const instance of this.projectServers.values()) {
       this.killProject(instance);

@@ -55,8 +55,10 @@ export async function sendProcessingError(
   err: unknown,
   sessionId: string | undefined,
   isTimeout: boolean,
+  actualBaseUrl?: string,
 ): Promise<void> {
   const errorMsg = err instanceof Error ? err.message : String(err);
+  const displayUrl = actualBaseUrl || config.opencodeServerUrl;
 
   if (watchdogState === "server_down") {
     log.error("processing failed: server down", { error: errorMsg });
@@ -71,10 +73,10 @@ export async function sendProcessingError(
       `⚠️ **任务超时**\n\nOpenCode AI 处理时间超过 ${Math.round(config.requestTimeoutMs / 1000)} 秒，可能因为任务较复杂。\n\n建议：\n  1. 请发送 **更具体的需求**，分步执行\n  2. 可尝试重新发送当前需求\n${sessionId ? `\n💬 会话ID: \`${sessionId.slice(0, 8)}\`` : ""}`
     ).catch(() => {});
   } else if (err instanceof TypeError && errorMsg === "fetch failed") {
-    log.error("processing failed: network error", { error: errorMsg });
+    log.error("processing failed: network error", { error: errorMsg, url: displayUrl });
     await dingtalk.sendTextMessage(
       webhook,
-      `❌ **网络连接失败**\n\n无法连接到 OpenCode 服务（${config.opencodeServerUrl}），请检查：\n  1. OpenCode 服务是否正在运行\n  2. 网络是否通畅\n  3. 稍后重试\n${sessionId ? `\n💬 会话ID: \`${sessionId.slice(0, 8)}\`` : ""}`
+      `❌ **网络连接失败**\n\n无法连接到 OpenCode 服务（${displayUrl}），请检查：\n  1. OpenCode 服务是否正在运行\n  2. 网络是否通畅\n  3. 稍后重试\n${sessionId ? `\n💬 会话ID: \`${sessionId.slice(0, 8)}\`` : ""}`
     ).catch(() => {});
   } else {
     log.error("processing failed", { error: errorMsg, isTimeout: false });
@@ -90,6 +92,12 @@ export interface AIMessageContext {
   dingtalk: DingTalkClient;
   config: AppConfig;
   sessions: SessionStore;
+  /**
+   * 回收项目服务端口并重启实例。
+   * 调用方（index.ts）负责根据 projectId 查找项目配置并执行回收。
+   * 未设置时（默认项目）跳过端口回收，仅重建 Session。
+   */
+  recycleProjectSession?: (projectId: string) => Promise<string>;
 }
 
 /**
@@ -211,6 +219,40 @@ export async function processAIMessage(
     let watchdog: Watchdog | undefined;
 
     try {
+      // ── 轮次上限检查：达到 MAX_ROUNDS_PER_SESSION 后回收实例 ──
+      if (ctx.config.maxRoundsPerSession > 0) {
+        const roundCount = sessions.getRoundCount(sessionKey);
+        if (roundCount >= ctx.config.maxRoundsPerSession) {
+          const projectId = sessionKey.split(":")[0];
+          log.info("round limit reached, recycling session", {
+            sessionKey,
+            rounds: roundCount,
+            max: ctx.config.maxRoundsPerSession,
+            projectId,
+          });
+
+          // 通知用户
+          await dingtalk.sendTextMessage(
+            msg.sessionWebhook,
+            `🔄 已达 ${ctx.config.maxRoundsPerSession} 轮对话上限，正在回收实例重新启动...`
+          ).catch(() => {});
+
+          if (projectId !== "default" && ctx.recycleProjectSession) {
+            // 项目服务：杀死旧进程，重启新实例（所有 session 清零）
+            await ctx.recycleProjectSession(projectId);
+            // 删除当前 session 映射，强制下次创建新 session
+            sessions.delete(sessionKey);
+            sessions.resetRound(sessionKey);
+          } else {
+            // 默认项目：不回收端口，只重建 Session（适用于 pipeline 所在的主服务）
+            sessions.delete(sessionKey);
+            sessions.resetRound(sessionKey);
+          }
+        }
+        // 轮次 +1（无论是否超限，每轮消息计数一次）
+        sessions.incrementRound(sessionKey);
+      }
+
       currentSessionId = sessions.get(sessionKey);
 
       // 验证 session 是否仍有效（opencode serve 重启后旧 ID 会失效）
@@ -342,7 +384,7 @@ export async function processAIMessage(
           shouldRetry = false;
           heartbeatStopSignal.abort();
           await heartbeatPromise.catch(() => {});
-          await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false);
+          await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false, opencode.baseUrl);
         }
 
         continue;
@@ -372,7 +414,7 @@ export async function processAIMessage(
           shouldRetry = false;
           heartbeatStopSignal.abort();
           await heartbeatPromise.catch(() => {});
-          await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false);
+          await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false, opencode.baseUrl);
         }
 
         continue;
@@ -402,7 +444,7 @@ export async function processAIMessage(
           shouldRetry = false;
           heartbeatStopSignal.abort();
           await heartbeatPromise.catch(() => {});
-          await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false);
+          await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false, opencode.baseUrl);
         }
 
         continue;
@@ -439,7 +481,7 @@ export async function processAIMessage(
           shouldRetry = false;
           heartbeatStopSignal.abort();
           await heartbeatPromise.catch(() => {});
-          await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false);
+          await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, retryErr, sessionId, false, opencode.baseUrl);
         }
 
         continue;
@@ -447,7 +489,7 @@ export async function processAIMessage(
 
       heartbeatStopSignal.abort();
       await heartbeatPromise.catch(() => {});
-      await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, err, sessionId, isTimeout);
+      await sendProcessingError(dingtalk, config, msg.sessionWebhook, watchdog?.state, err, sessionId, isTimeout, opencode.baseUrl);
     }
   } while (shouldRetry);
 }
